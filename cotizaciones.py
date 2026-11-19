@@ -1539,42 +1539,50 @@ with tab2:
           p_cur["pct_ing_1"] = int(pct1_p)
 
     with col_calc:
-      st.markdown("**Indirectos, margen y SAT de la partida**")
-      p_cur["pct_herr"] = st.slider(
-          "Herramienta menor (% de MO)",
-          0,
-          10,
-          value=_clamp(p_cur["pct_herr"], 0, 10),
-          key=f"p_herr_{ss['partida_activa']}_{ss['ver']}",
-      )
-      p_cur["pct_ind"] = st.slider(
-          "Indirectos (%)",
-          0,
-          30,
-          value=_clamp(p_cur["pct_ind"], 0, 30),
-          key=f"p_ind_{ss['partida_activa']}_{ss['ver']}",
-      )
-      p_cur["pct_gar"] = st.slider(
-          "Garantía / contingencia (%)",
-          0,
-          15,
-          value=_clamp(p_cur["pct_gar"], 0, 15),
-          key=f"p_gar_{ss['partida_activa']}_{ss['ver']}",
-      )
-      p_cur["pct_uti"] = st.slider(
-          "Utilidad (%)",
-          5,
-          60,
-          value=_clamp(p_cur["pct_uti"], 5, 60),
-          key=f"p_uti_{ss['partida_activa']}_{ss['ver']}",
-      )
-      p_cur["regimen"] = st.radio(
-          "Régimen",
-          REGIMENES,
-          index=REGIMENES.index(p_cur["regimen"]),
-          key=f"p_reg_{ss['partida_activa']}_{ss['ver']}",
-      )
-
+        st.markdown("**Indirectos, margen y SAT de la partida**")
+        p_cur["pct_herr"] = st.slider(
+            "Herramienta menor (% de MO)",
+            0,
+            10,
+            value=_clamp(p_cur["pct_herr"], 0, 10),
+            help="Desgaste de herramienta menor, calculado sobre la mano de obra.",
+            key=f"p_herr_{ss['partida_activa']}_{ss['ver']}",
+        )
+        p_cur["pct_ind"] = st.slider(
+            "Indirectos (%)",
+            0,
+            30,
+            value=_clamp(p_cur["pct_ind"], 0, 30),
+            help="Gastos operativos generales, aplicados sobre el Costo Directo.",
+            key=f"p_ind_{ss['partida_activa']}_{ss['ver']}",
+        )
+        p_cur["pct_gar"] = st.slider(
+            "Garantía / contingencia (%)",
+            0,
+            15,
+            value=_clamp(p_cur["pct_gar"], 0, 15),
+            help="Colchón por revisiones o imprevistos, sobre Costo Directo + Indirectos.",
+            key=f"p_gar_{ss['partida_activa']}_{ss['ver']}",
+        )
+        p_cur["pct_uti"] = st.slider(
+            "Utilidad (%)",
+            5,
+            60,
+            value=_clamp(p_cur["pct_uti"], 5, 60),
+            help=(
+                "Se aplica sobre Costo Directo + Indirectos + Garantía (markup, no margen):"
+                " 25% de utilidad equivale a ~20% de margen sobre el precio de venta."
+            ),
+            key=f"p_uti_{ss['partida_activa']}_{ss['ver']}",
+        )
+        p_cur["regimen"] = st.radio(
+            "Régimen",
+             REGIMENES,
+             index=REGIMENES.index(p_cur["regimen"]),
+             help="Estimación orientativa de ISR; confírmala con tu contador (retenciones a personas morales, etc.).",
+             key=f"p_reg_{ss['partida_activa']}_{ss['ver']}",
+        )
+        
     # Recalcular partida activa con los valores recién editados
     res_act = calcular_partida(
         df_sel=df_edit_p,
