@@ -17,7 +17,7 @@ import streamlit as st
 # ----------------------------------------------------------------------------
 # Configuración y constantes
 # ----------------------------------------------------------------------------
-st.set_page_config(page_title="Cotizador PU", layout="wide")
+st.set_page_config(page_title="Cotizador PU · Etapa 2", layout="wide")
 
 TZ = ZoneInfo("America/Mexico_City")
 IVA = 0.16
@@ -30,7 +30,6 @@ TIPOS_INSUMO = ["Material", "Equipo / Herramienta"]
 FACTORES_URGENCIA = [1.0, 1.15, 1.25, 1.5, 2.0]
 REGIMENES = ["RESICO (1% ISR)", "Actividad Empresarial (~20% s/util)"]
 
-# esquema -> [(nombre, tarifa por defecto, ayuda)]
 ESQUEMAS = {
     "2 Ingenieros": [
         (
@@ -88,42 +87,86 @@ COLS_SEL = [
     "Cantidad",
 ]
 
-DESC_DEFAULT = (
-    "Servicio de mantenimiento correctivo en polipasto monofásico: diagnóstico,"
-    " habilitación provisional y montaje definitivo de banco capacitivo"
-    " 150 µF / 400 VAC."
+PARTIDA_DEFAULT_1 = (
+    "Diagnóstico inicial, pruebas de carga y habilitación provisional de"
+    " polipasto/elevador"
+)
+PARTIDA_DEFAULT_2 = (
+    "Montaje definitivo de capacitor / banco capacitivo (74 µF / 150 µF) y"
+    " pruebas finales"
 )
 
 
-def _defaults() -> dict:
-  d = {
-      "folio": "",
-      "cliente": "Cliente Residencial",
-      "ubicacion": "Colima",
-      "desc": DESC_DEFAULT,
-      "esquema": NOMBRES_ESQUEMA[0],
-      "factor_urg": 1.25,
-      "dividir": True,
-      "pct_ing_1": 50,
-      "pct_herr": 3,
-      "pct_ind": 12,
-      "pct_gar": 5,
-      "pct_uti": 25,
-      "regimen": REGIMENES[0],
-      "sobrescribir": False,
-      "base_df": None,
-      "ver": 0,
-      "cot_cargada": None,
-  }
+def _mo_defaults(prefix: str) -> dict:
+  d = {}
   for e, nombre in enumerate(NOMBRES_ESQUEMA):
     for i, (_, tarifa, _) in enumerate(ESQUEMAS[nombre]):
-      d[f"t_{e}_{i}"] = tarifa
-      d[f"h_{e}_{i}"] = 4.0
+      d[f"{prefix}_t_{e}_{i}"] = tarifa
+      d[f"{prefix}_h_{e}_{i}"] = 4.0
   return d
 
 
+def _nueva_partida_estado(
+    nombre: str = "Nueva partida",
+    unidad: str = "Serv",
+    cantidad: float = 1.0,
+    esquema: str | None = None,
+    factor_urg: float = 1.25,
+    pct_herr: int = 3,
+    pct_ind: int = 12,
+    pct_gar: int = 5,
+    pct_uti: int = 25,
+    regimen: str | None = None,
+    dividir: bool = True,
+    pct_ing_1: int = 50,
+    insumos_df: pd.DataFrame | None = None,
+    tarifas_horas: dict | None = None,
+) -> dict:
+  esq = esquema if esquema in ESQUEMAS else NOMBRES_ESQUEMA[0]
+  reg = regimen if regimen in REGIMENES else REGIMENES[0]
+  p = {
+      "nombre": nombre,
+      "unidad": unidad,
+      "cantidad": float(cantidad),
+      "esquema": esq,
+      "factor_urg": float(factor_urg),
+      "pct_herr": int(pct_herr),
+      "pct_ind": int(pct_ind),
+      "pct_gar": int(pct_gar),
+      "pct_uti": int(pct_uti),
+      "regimen": reg,
+      "dividir": bool(dividir),
+      "pct_ing_1": int(pct_ing_1),
+      "insumos_df": insumos_df.copy() if insumos_df is not None else None,
+  }
+  p.update(_mo_defaults("mo"))
+  if tarifas_horas:
+    for k, v in tarifas_horas.items():
+      if k in p:
+        p[k] = float(v)
+  return p
+
+
+def _defaults() -> dict:
+  return {
+      "folio": "",
+      "cliente": "Cliente Residencial",
+      "ubicacion": "Colima",
+      "sobrescribir": False,
+      "ver": 0,
+      "cot_cargada": None,
+      "partidas": [
+          _nueva_partida_estado(PARTIDA_DEFAULT_1, "Serv", 1.0),
+          _nueva_partida_estado(
+              PARTIDA_DEFAULT_2, "Serv", 1.0, factor_urg=1.0
+          ),
+      ],
+      "partida_activa": 0,
+  }
+
+
 # ----------------------------------------------------------------------------
-# Seguridad: acceso con contraseña (falla cerrado si no hay APP_PASSWORD)
+# Seguridad: acceso con contraseña
 # ----------------------------------------------------------------------------
 @st.cache_resource
 def _estado_login() -> dict:
@@ -172,7 +215,7 @@ def verificar_acceso():
 
 
 verificar_acceso()
-st.title("⚡ Cotizador PU")
+st.title("⚡ Cotizador PU · Multi-Partida & APU")
 with st.sidebar:
   if st.button("Cerrar sesión"):
     st.session_state["auth_ok"] = False
@@ -187,7 +230,6 @@ for _k, _v in _defaults().items():
 # ----------------------------------------------------------------------------
 @contextmanager
 def get_conn():
-  """Abre, hace commit/rollback y SIEMPRE cierra la conexión."""
   conn = psycopg2.connect(
       st.secrets["DB"],
       sslmode="require",
@@ -236,20 +278,40 @@ CREATE TABLE IF NOT EXISTS cotizaciones (
     iva_por_pagar NUMERIC(12, 2) NOT NULL,
     isr_estimado NUMERIC(12, 2) NOT NULL,
     ganancia_neta_libre NUMERIC(12, 2) NOT NULL,
+    parametros JSONB,
     fecha_creacion TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS cotizacion_partidas (
+    id SERIAL PRIMARY KEY,
+    folio VARCHAR(30) NOT NULL REFERENCES cotizaciones(folio) ON DELETE CASCADE,
+    orden INT NOT NULL DEFAULT 1,
+    nombre VARCHAR(200) NOT NULL,
+    unidad VARCHAR(20) NOT NULL DEFAULT 'Serv',
+    cantidad NUMERIC(10, 2) NOT NULL DEFAULT 1.00,
+    pu_sin_iva NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    importe NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    costo_directo NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    ganancia_neta_libre NUMERIC(12, 2) NOT NULL DEFAULT 0.00,
+    parametros JSONB
 );
 
 CREATE TABLE IF NOT EXISTS cotizacion_insumos (
     id SERIAL PRIMARY KEY,
     folio VARCHAR(30) REFERENCES cotizaciones(folio) ON DELETE CASCADE,
+    partida_id INT REFERENCES cotizacion_partidas(id) ON DELETE CASCADE,
     concepto VARCHAR(150) NOT NULL,
     tipo_insumo VARCHAR(30) NOT NULL DEFAULT 'Material',
+    unidad VARCHAR(20) NOT NULL DEFAULT 'Pza',
     cantidad NUMERIC(10, 2) NOT NULL,
     costo_unitario_sin_iva NUMERIC(12, 2) NOT NULL,
+    con_factura BOOLEAN NOT NULL DEFAULT TRUE,
     importe NUMERIC(12, 2) NOT NULL
 );
 
 ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS parametros JSONB;
+ALTER TABLE cotizacion_insumos
+    ADD COLUMN IF NOT EXISTS partida_id INT REFERENCES cotizacion_partidas(id) ON DELETE CASCADE;
 ALTER TABLE cotizacion_insumos
     ADD COLUMN IF NOT EXISTS tipo_insumo VARCHAR(30) NOT NULL DEFAULT 'Material';
 ALTER TABLE cotizacion_insumos
@@ -279,13 +341,13 @@ CREATE TABLE IF NOT EXISTS folio_consecutivo (
 );
 
 CREATE INDEX IF NOT EXISTS idx_cot_fecha ON cotizaciones (fecha_creacion DESC);
+CREATE INDEX IF NOT EXISTS idx_cotpart_folio ON cotizacion_partidas (folio, orden);
 CREATE INDEX IF NOT EXISTS idx_cotins_folio ON cotizacion_insumos (folio);
 """
 
 
 @st.cache_resource(show_spinner=False)
 def init_db() -> bool:
-  """Corre la migración una sola vez por proceso (no en cada rerun)."""
   with get_conn() as conn:
     with conn.cursor() as cur:
       cur.execute(MIGRACION_SQL)
@@ -330,7 +392,6 @@ def cargar_catalogo() -> pd.DataFrame:
 
 
 def guardar_catalogo(df: pd.DataFrame) -> list[str]:
-  """Valida y guarda. Devuelve lista de errores (vacía si todo salió bien)."""
   errores, filas = [], []
   for pos, row in df.iterrows():
     n = pos + 1 if isinstance(pos, int) else pos
@@ -397,6 +458,127 @@ def guardar_catalogo(df: pd.DataFrame) -> list[str]:
   return []
 
 
+# ---- Cálculo APU por partida y explosión de insumos ------------------------
+def calcular_partida(
+    df_sel: pd.DataFrame,
+    cantidad_partida: float,
+    costo_mo_base: float,
+    factor_urg: float,
+    pct_herr: float,
+    pct_ind: float,
+    pct_gar: float,
+    pct_uti: float,
+    regimen: str,
+) -> dict:
+  cant_p = max(0.0, float(cantidad_partida or 0.0))
+  es_mat = df_sel["tipo_insumo"] == "Material"
+  costo_mat_unit = float(df_sel.loc[es_mat, "Importe"].sum())
+  costo_eq_unit = float(df_sel.loc[~es_mat, "Importe"].sum())
+
+  con_fac_unit = float(df_sel.loc[df_sel["con_factura"], "Importe"].sum())
+  sin_fac_unit = float(df_sel.loc[~df_sel["con_factura"], "Importe"].sum())
+
+  costo_mo_unit = float(costo_mo_base) * float(factor_urg)
+  herr_unit = costo_mo_unit * float(pct_herr)
+
+  cd_unit = costo_mat_unit + costo_eq_unit + costo_mo_unit + herr_unit
+  ci_unit = cd_unit * float(pct_ind)
+  gar_unit = (cd_unit + ci_unit) * float(pct_gar)
+  uti_unit = (cd_unit + ci_unit + gar_unit) * float(pct_uti)
+  pu_sin_iva = cd_unit + ci_unit + gar_unit + uti_unit
+
+  cd = cd_unit * cant_p
+  ci = ci_unit * cant_p
+  gar = gar_unit * cant_p
+  uti = uti_unit * cant_p
+  subtotal = pu_sin_iva * cant_p
+  iva_tras = subtotal * IVA
+  total = subtotal + iva_tras
+
+  con_fac_tot = con_fac_unit * cant_p
+  sin_fac_tot = sin_fac_unit * cant_p
+  iva_acred_tot = con_fac_tot * IVA
+  costo_mo_tot = costo_mo_unit * cant_p
+
+  iva_pagar = max(0.0, iva_tras - iva_acred_tot)
+  isr = subtotal * ISR_RESICO if "RESICO" in regimen else max(0.0, uti * ISR_ACT_EMP)
+  desembolso = con_fac_tot * (1 + IVA) + sin_fac_tot
+  ganancia = total - desembolso - iva_pagar - isr
+
+  return {
+      "costo_mat": costo_mat_unit * cant_p,
+      "costo_eq": costo_eq_unit * cant_p,
+      "costo_mo": costo_mo_tot,
+      "herr": herr_unit * cant_p,
+      "cd": cd,
+      "ci": ci,
+      "gar": gar,
+      "uti": uti,
+      "pu_sin_iva": pu_sin_iva,
+      "subtotal": subtotal,
+      "iva_tras": iva_tras,
+      "total": total,
+      "iva_pagar": iva_pagar,
+      "isr": isr,
+      "ganancia": ganancia,
+      "ganancia_sin_mo": ganancia - costo_mo_tot,
+  }
+
+
+def construir_explosion(partidas_resumen: list[dict]) -> pd.DataFrame:
+  """Consolida insumos de todas las partidas multiplicando por cantidad de partida."""
+  filas = []
+  for p in partidas_resumen:
+    cant_p = max(0.0, float(p["cantidad"] or 0.0))
+    df_p = p["df_sel"]
+    usados = df_p[df_p["Cantidad"] > 0]
+    for _, r in usados.iterrows():
+      cant_req = float(r["Cantidad"]) * cant_p
+      pu = float(r["costo_sin_iva"])
+      filas.append({
+          "Concepto": str(r["Concepto"]),
+          "Tipo": _tipo(r.get("tipo_insumo")),
+          "Unidad": _txt(r.get("unidad"), "Pza") or "Pza",
+          "Cantidad Total": round(cant_req, 2),
+          "P.U. s/IVA": round(pu, 2),
+          "Importe Total": round(cant_req * pu, 2),
+          "Con factura": bool(r.get("con_factura", True)),
+      })
+  if not filas:
+    return pd.DataFrame(
+        columns=[
+            "Concepto",
+            "Tipo",
+            "Unidad",
+            "Cantidad Total",
+            "P.U. s/IVA",
+            "Importe Total",
+            "Con factura",
+        ]
+    )
+  df_raw = pd.DataFrame(filas)
+  agg = (
+      df_raw.groupby(
+          ["Concepto", "Tipo", "Unidad", "P.U. s/IVA", "Con factura"],
+          as_index=False,
+      )[["Cantidad Total", "Importe Total"]]
+      .sum()
+      .sort_values(["Tipo", "Concepto"])
+      .reset_index(drop=True)
+  )
+  return agg[
+      [
+          "Concepto",
+          "Tipo",
+          "Unidad",
+          "Cantidad Total",
+          "P.U. s/IVA",
+          "Importe Total",
+          "Con factura",
+      ]
+  ]
+
+
 # ---- Cotizaciones ----------------------------------------------------------
 def siguiente_folio(cur) -> str:
   anio = datetime.now(TZ).year
@@ -409,30 +591,17 @@ def siguiente_folio(cur) -> str:
   return f"COT-{anio}-{cur.fetchone()[0]:04d}"
 
 
-def guardar_cotizacion(
-    datos: dict, df_detalle: pd.DataFrame, parametros: dict, sobrescribir: bool
+def guardar_cotizacion_multipartida(
+    datos: dict,
+    partidas_resumen: list[dict],
+    parametros_global: dict,
+    sobrescribir: bool,
 ) -> str:
-  payload = {**datos, "parametros": Json(parametros)}
-  usados = df_detalle[df_detalle["Cantidad"] > 0]
-  filas_insumos = [
-      (
-          datos["folio"],
-          str(it["Concepto"]),
-          _tipo(it.get("tipo_insumo")),
-          _txt(it["unidad"], "Pza") or "Pza",
-          round(float(it["Cantidad"]), 2),
-          round(float(it["costo_sin_iva"]), 2),
-          bool(it["con_factura"]),
-          round(float(it["Importe"]), 2),
-      )
-      for _, it in usados.iterrows()
-  ]
-
+  payload = {**datos, "parametros": Json(parametros_global)}
   with get_conn() as conn:
     with conn.cursor() as cur:
       if not payload["folio"]:
         payload["folio"] = siguiente_folio(cur)
-        filas_insumos = [(payload["folio"], *f[1:]) for f in filas_insumos]
         cur.execute(
             """
                 INSERT INTO cotizaciones (
@@ -478,6 +647,10 @@ def guardar_cotizacion(
             "DELETE FROM cotizacion_insumos WHERE folio = %s",
             (payload["folio"],),
         )
+        cur.execute(
+            "DELETE FROM cotizacion_partidas WHERE folio = %s",
+            (payload["folio"],),
+        )
       else:
         cur.execute(
             """
@@ -496,13 +669,53 @@ def guardar_cotizacion(
             payload,
         )
 
-      if filas_insumos:
-        cur.executemany(
-            "INSERT INTO cotizacion_insumos"
-            " (folio, concepto, tipo_insumo, unidad, cantidad, costo_unitario_sin_iva, con_factura, importe)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            filas_insumos,
+      for idx, p in enumerate(partidas_resumen, start=1):
+        res = p["res"]
+        cur.execute(
+            """
+                INSERT INTO cotizacion_partidas (
+                    folio, orden, nombre, unidad, cantidad, pu_sin_iva, importe,
+                    costo_directo, ganancia_neta_libre, parametros
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+            (
+                payload["folio"],
+                idx,
+                _txt(p["nombre"], f"Partida {idx}"),
+                _txt(p["unidad"], "Serv") or "Serv",
+                round(float(p["cantidad"]), 2),
+                round(float(res["pu_sin_iva"]), 2),
+                round(float(res["subtotal"]), 2),
+                round(float(res["cd"]), 2),
+                round(float(res["ganancia"]), 2),
+                Json(p["parametros_partida"]),
+            ),
         )
+        partida_id = cur.fetchone()[0]
+        usados = p["df_sel"][p["df_sel"]["Cantidad"] > 0]
+        if not usados.empty:
+          cur.executemany(
+              "INSERT INTO cotizacion_insumos"
+              " (folio, partida_id, concepto, tipo_insumo, unidad, cantidad,"
+              " costo_unitario_sin_iva, con_factura, importe)"
+              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+              [
+                  (
+                      payload["folio"],
+                      partida_id,
+                      str(it["Concepto"]),
+                      _tipo(it.get("tipo_insumo")),
+                      _txt(it["unidad"], "Pza") or "Pza",
+                      round(float(it["Cantidad"]), 2),
+                      round(float(it["costo_sin_iva"]), 2),
+                      bool(it["con_factura"]),
+                      round(float(it["Importe"]), 2),
+                  )
+                  for _, it in usados.iterrows()
+              ],
+          )
+
   cargar_historial.clear()
   return payload["folio"]
 
@@ -536,7 +749,7 @@ def cargar_historial() -> pd.DataFrame:
   return df
 
 
-def obtener_cotizacion(folio: str):
+def obtener_cotizacion_completa(folio: str):
   with get_conn() as conn:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
       cur.execute(
@@ -547,20 +760,30 @@ def obtener_cotizacion(folio: str):
       )
       cot = cur.fetchone()
       cur.execute(
-          "SELECT concepto, tipo_insumo, unidad,"
+          "SELECT id, orden, nombre, unidad, cantidad::float AS cantidad,"
+          " pu_sin_iva::float AS pu_sin_iva, importe::float AS importe,"
+          " parametros FROM cotizacion_partidas WHERE folio = %s ORDER BY"
+          " orden, id",
+          (folio,),
+      )
+      partidas = cur.fetchall()
+      cur.execute(
+          "SELECT partida_id, concepto, tipo_insumo, unidad,"
           " cantidad::float AS cantidad, costo_unitario_sin_iva::float AS"
           " costo_sin_iva, con_factura FROM cotizacion_insumos WHERE folio ="
           " %s ORDER BY id",
           (folio,),
       )
       insumos = cur.fetchall()
-  return cot, insumos
+  return cot, partidas, insumos
 
 
 # ----------------------------------------------------------------------------
-# Exportación Excel y PDF
+# Exportación Excel y PDF (Multi-Partida + Explosión)
 # ----------------------------------------------------------------------------
-def generar_excel_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
+def generar_excel_cotizacion(
+    datos: dict, partidas_resumen: list[dict], df_explosion: pd.DataFrame
+) -> bytes:
   wb = openpyxl.Workbook()
   ws = wb.active
   ws.title = "Cotizacion"
@@ -584,10 +807,9 @@ def generar_excel_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
   ws["A1"] = "COTIZACIÓN DE SERVICIO ELECTROMECÁNICO"
   ws["A1"].font = font_title
 
-  folio_txt = datos["folio"] or "BORRADOR"
   ws["A3"] = "Folio:"
   ws["A3"].font = font_bold
-  ws["B3"] = folio_txt
+  ws["B3"] = datos["folio"] or "BORRADOR"
   ws["D3"] = "Fecha:"
   ws["D3"].font = font_bold
   ws["E3"] = datetime.now(TZ).strftime("%d/%m/%Y")
@@ -599,43 +821,34 @@ def generar_excel_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
   ws["D4"].font = font_bold
   ws["E4"] = datos["ubicacion"]
 
-  ws["A6"] = "Descripción del Servicio:"
-  ws["A6"].font = font_bold
-  ws["A7"] = datos["descripcion_servicio"]
-  ws.merge_cells("A7:E7")
-  ws["A7"].alignment = Alignment(wrap_text=True, vertical="top")
-  ws.row_dimensions[7].height = 42
+  row_idx = 6
+  ws.cell(
+      row=row_idx, column=1, value="Partidas / Conceptos del Servicio"
+  ).font = font_bold
+  row_idx += 1
+  headers = ["Partida / Concepto", "Unidad", "Cantidad", "P.U. s/IVA", "Importe"]
+  for col_i, h in enumerate(headers, start=1):
+    cell = ws.cell(row=row_idx, column=col_i, value=h)
+    cell.fill = header_fill
+    cell.font = font_header
+    cell.alignment = Alignment(horizontal="center")
+  row_idx += 1
 
-  row_idx = 9
-  if not df_usados.empty:
-    ws.cell(
-        row=row_idx, column=1, value="Insumos y Equipos Contemplados"
-    ).font = font_bold
-    row_idx += 1
-    headers = ["Concepto", "Unidad", "Cantidad", "P.U. Ref.", "Importe"]
-    for col_i, h in enumerate(headers, start=1):
-      cell = ws.cell(row=row_idx, column=col_i, value=h)
-      cell.fill = header_fill
-      cell.font = font_header
-      cell.alignment = Alignment(horizontal="center")
-    row_idx += 1
-
-    for _, r in df_usados.iterrows():
-      ws.cell(row=row_idx, column=1, value=r["Concepto"]).border = thin_border
-      ws.cell(row=row_idx, column=2, value=r["unidad"]).border = thin_border
-      c_cant = ws.cell(row=row_idx, column=3, value=float(r["Cantidad"]))
-      c_cant.number_format = "#,##0.00"
-      c_cant.border = thin_border
-      c_pu = ws.cell(row=row_idx, column=4, value=float(r["costo_sin_iva"]))
-      c_pu.number_format = "$#,##0.00"
-      c_pu.border = thin_border
-      c_imp = ws.cell(row=row_idx, column=5, value=float(r["Importe"]))
-      c_imp.number_format = "$#,##0.00"
-      c_imp.border = thin_border
-      row_idx += 1
+  for p in partidas_resumen:
+    res = p["res"]
+    ws.cell(row=row_idx, column=1, value=p["nombre"]).border = thin_border
+    ws.cell(row=row_idx, column=2, value=p["unidad"]).border = thin_border
+    c_cant = ws.cell(row=row_idx, column=3, value=float(p["cantidad"]))
+    c_cant.number_format = "#,##0.00"
+    c_cant.border = thin_border
+    c_pu = ws.cell(row=row_idx, column=4, value=float(res["pu_sin_iva"]))
+    c_pu.number_format = "$#,##0.00"
+    c_pu.border = thin_border
+    c_imp = ws.cell(row=row_idx, column=5, value=float(res["subtotal"]))
+    c_imp.number_format = "$#,##0.00"
+    c_imp.border = thin_border
     row_idx += 1
 
-  ws.cell(row=row_idx, column=1, value="Resumen Económico").font = font_bold
   row_idx += 1
   resumen = [
       ("Subtotal del Servicio (antes de IVA)", datos["subtotal"]),
@@ -655,7 +868,35 @@ def generar_excel_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
       c_val.fill = sub_fill
     row_idx += 1
 
-  ws.column_dimensions["A"].width = 42
+  if not df_explosion.empty:
+    ws_exp = wb.create_sheet(title="Explosion_Insumos")
+    ws_exp["A1"] = "EXPLOSIÓN DE INSUMOS Y EQUIPOS"
+    ws_exp["A1"].font = font_title
+    exp_cols = ["Concepto", "Tipo", "Unidad", "Cantidad Total", "Importe Total"]
+    for col_i, h in enumerate(exp_cols, start=1):
+      cell = ws_exp.cell(row=3, column=col_i, value=h)
+      cell.fill = header_fill
+      cell.font = font_header
+      cell.alignment = Alignment(horizontal="center")
+    r_i = 4
+    for _, er in df_explosion.iterrows():
+      ws_exp.cell(row=r_i, column=1, value=er["Concepto"]).border = thin_border
+      ws_exp.cell(row=r_i, column=2, value=er["Tipo"]).border = thin_border
+      ws_exp.cell(row=r_i, column=3, value=er["Unidad"]).border = thin_border
+      c1 = ws_exp.cell(row=r_i, column=4, value=float(er["Cantidad Total"]))
+      c1.number_format = "#,##0.00"
+      c1.border = thin_border
+      c2 = ws_exp.cell(row=r_i, column=5, value=float(er["Importe Total"]))
+      c2.number_format = "$#,##0.00"
+      c2.border = thin_border
+      r_i += 1
+    ws_exp.column_dimensions["A"].width = 40
+    ws_exp.column_dimensions["B"].width = 22
+    ws_exp.column_dimensions["C"].width = 14
+    ws_exp.column_dimensions["D"].width = 16
+    ws_exp.column_dimensions["E"].width = 18
+
+  ws.column_dimensions["A"].width = 48
   ws.column_dimensions["B"].width = 14
   ws.column_dimensions["C"].width = 14
   ws.column_dimensions["D"].width = 28
@@ -666,7 +907,9 @@ def generar_excel_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
   return buf.getvalue()
 
 
-def generar_pdf_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
+def generar_pdf_cotizacion(
+    datos: dict, partidas_resumen: list[dict], df_explosion: pd.DataFrame
+) -> bytes:
   def limpio(txt: str) -> str:
     return (
         str(txt)
@@ -713,27 +956,23 @@ def generar_pdf_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
   pdf.ln(4)
 
   pdf.set_font("Helvetica", "B", 10)
-  pdf.cell(0, 7, limpio("Alcance y Descripción del Servicio:"), 0, 1)
-  pdf.set_font("Helvetica", "", 10)
-  pdf.multi_cell(0, 6, limpio(datos["descripcion_servicio"]), border=1)
+  pdf.cell(0, 7, limpio("Partidas / Conceptos del Servicio:"), 0, 1)
+  pdf.set_fill_color(232, 238, 245)
+  pdf.cell(95, 7, limpio("Concepto / Partida"), 1, 0, "C", True)
+  pdf.cell(18, 7, "Unid.", 1, 0, "C", True)
+  pdf.cell(20, 7, "Cant.", 1, 0, "C", True)
+  pdf.cell(28, 7, "P.U. s/IVA", 1, 0, "C", True)
+  pdf.cell(29, 7, "Importe", 1, 1, "C", True)
+
+  pdf.set_font("Helvetica", "", 9)
+  for p in partidas_resumen:
+    res = p["res"]
+    pdf.cell(95, 7, limpio(p["nombre"])[:48], 1, 0)
+    pdf.cell(18, 7, limpio(p["unidad"]), 1, 0, "C")
+    pdf.cell(20, 7, f"{float(p['cantidad']):,.2f}", 1, 0, "R")
+    pdf.cell(28, 7, f"${float(res['pu_sin_iva']):,.2f}", 1, 0, "R")
+    pdf.cell(29, 7, f"${float(res['subtotal']):,.2f}", 1, 1, "R")
   pdf.ln(5)
-
-  if not df_usados.empty:
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(0, 7, "Refacciones, Insumos y Equipos Considerados:", 0, 1)
-    pdf.set_fill_color(232, 238, 245)
-    pdf.cell(110, 7, "Concepto", 1, 0, "C", True)
-    pdf.cell(25, 7, "Unidad", 1, 0, "C", True)
-    pdf.cell(25, 7, "Cant.", 1, 0, "C", True)
-    pdf.cell(30, 7, "Importe", 1, 1, "C", True)
-
-    pdf.set_font("Helvetica", "", 9)
-    for _, r in df_usados.iterrows():
-      pdf.cell(110, 7, limpio(r["Concepto"])[:55], 1, 0)
-      pdf.cell(25, 7, limpio(r["unidad"]), 1, 0, "C")
-      pdf.cell(25, 7, f"{float(r['Cantidad']):,.2f}", 1, 0, "R")
-      pdf.cell(30, 7, f"${float(r['Importe']):,.2f}", 1, 1, "R")
-    pdf.ln(5)
 
   pdf.set_x(105)
   pdf.set_font("Helvetica", "", 10)
@@ -750,7 +989,23 @@ def generar_pdf_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
   pdf.cell(55, 8, "TOTAL (MXN):", 1, 0, "R", True)
   pdf.cell(35, 8, f"${datos['total_facturado']:,.2f}", 1, 1, "R", True)
 
-  pdf.ln(8)
+  if not df_explosion.empty:
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 7, limpio("Explosión de Insumos y Equipos Requeridos:"), 0, 1)
+    pdf.set_fill_color(232, 238, 245)
+    pdf.cell(110, 7, "Concepto", 1, 0, "C", True)
+    pdf.cell(35, 7, "Tipo", 1, 0, "C", True)
+    pdf.cell(20, 7, "Unid.", 1, 0, "C", True)
+    pdf.cell(25, 7, "Cant.", 1, 1, "C", True)
+    pdf.set_font("Helvetica", "", 9)
+    for _, er in df_explosion.iterrows():
+      pdf.cell(110, 7, limpio(er["Concepto"])[:56], 1, 0)
+      pdf.cell(35, 7, limpio(er["Tipo"]), 1, 0, "C")
+      pdf.cell(20, 7, limpio(er["Unidad"]), 1, 0, "C")
+      pdf.cell(25, 7, f"{float(er['Cantidad Total']):,.2f}", 1, 1, "R")
+
+  pdf.ln(7)
   pdf.set_font("Helvetica", "I", 8)
   pdf.set_text_color(90, 90, 90)
   pdf.multi_cell(
@@ -767,7 +1022,7 @@ def generar_pdf_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
 
 
 # ----------------------------------------------------------------------------
-# Utilidades de interfaz
+# Utilidades de interfaz y callbacks
 # ----------------------------------------------------------------------------
 def tabla(fn, *args, **kwargs):
   try:
@@ -786,82 +1041,38 @@ def _clamp(v, lo, hi):
   return int(max(lo, min(hi, round(float(v)))))
 
 
-def cb_cargar(folio: str):
+def cb_agregar_partida(cat: pd.DataFrame):
   ss = st.session_state
-  cot, insumos = obtener_cotizacion(folio)
-  if not cot:
-    ss["msg_historial"] = ("error", f"No se encontró la cotización {folio}.")
-    return
-  p = cot["parametros"] or {}
-  ss["folio"] = cot["folio"]
-  ss["cliente"] = cot["cliente"]
-  ss["ubicacion"] = cot["ubicacion"] or ""
-  ss["desc"] = cot["descripcion_servicio"] or ""
-  ss["factor_urg"] = float(cot["factor_urgencia"] or 1.0)
-  ss["sobrescribir"] = False
-
-  if p:
-    esq = p.get("esquema", NOMBRES_ESQUEMA[0])
-    if esq not in ESQUEMAS:
-      esq = NOMBRES_ESQUEMA[0]
-    ss["esquema"] = esq
-    e = NOMBRES_ESQUEMA.index(esq)
-    for i, (t, h) in enumerate(zip(p.get("tarifas", []), p.get("horas", []))):
-      if f"t_{e}_{i}" in ss:
-        ss[f"t_{e}_{i}"] = float(t)
-        ss[f"h_{e}_{i}"] = float(h)
-    ss["pct_herr"] = _clamp(p.get("pct_herr", 3), 0, 10)
-    ss["pct_ind"] = _clamp(p.get("pct_ind", 12), 0, 30)
-    ss["pct_gar"] = _clamp(p.get("pct_gar", 5), 0, 15)
-    ss["pct_uti"] = _clamp(p.get("pct_uti", 25), 5, 60)
-    ss["regimen"] = (
-        p.get("regimen") if p.get("regimen") in REGIMENES else REGIMENES[0]
-    )
-    ss["dividir"] = bool(p.get("dividir", True))
-    ss["pct_ing_1"] = _clamp(p.get("pct_ing_1", 50), 0, 100)
-    aviso = None
-  else:
-    aviso = (
-        "Esta cotización es anterior a la v4 y no guardó sus parámetros"
-        " (tarifas, horas, porcentajes). Se cargaron los insumos y los"
-        " parámetros quedaron en valores por defecto: ajústalos antes de"
-        " volver a guardarla."
-    )
-
-  cat = cargar_catalogo()
-  filas = [
-      {
-          "Concepto": i["concepto"],
-          "tipo_insumo": _tipo(i.get("tipo_insumo")),
-          "unidad": i["unidad"],
-          "costo_sin_iva": i["costo_sin_iva"],
-          "con_factura": i["con_factura"],
-          "Cantidad": i["cantidad"],
-      }
-      for i in insumos
-  ]
-  usados = {i["concepto"] for i in insumos}
-  for _, r in cat.iterrows():
-    if r["concepto"] not in usados:
-      filas.append({
-          "Concepto": r["concepto"],
-          "tipo_insumo": _tipo(r.get("tipo_insumo")),
-          "unidad": r["unidad"],
-          "costo_sin_iva": r["costo_sin_iva"],
-          "con_factura": r["con_factura"],
-          "Cantidad": 0.0,
-      })
-  ss["base_df"] = pd.DataFrame(filas, columns=COLS_SEL)
-  ss["ver"] += 1
-  ss["cot_cargada"] = cot["folio"]
-  ss["msg_historial"] = (
-      ("warning", aviso)
-      if aviso
-      else (
-          "success",
-          f"Cotización {folio} cargada. Ve a la pestaña «2. Nueva Cotización».",
-      )
+  idx_actual = min(ss["partida_activa"], len(ss["partidas"]) - 1)
+  actual = ss["partidas"][idx_actual]
+  nueva = _nueva_partida_estado(
+      nombre=f"Partida {len(ss['partidas']) + 1}",
+      unidad="Serv",
+      cantidad=1.0,
+      esquema=actual["esquema"],
+      factor_urg=1.0,
+      pct_herr=actual["pct_herr"],
+      pct_ind=actual["pct_ind"],
+      pct_gar=actual["pct_gar"],
+      pct_uti=actual["pct_uti"],
+      regimen=actual["regimen"],
+      dividir=actual["dividir"],
+      pct_ing_1=actual["pct_ing_1"],
+      insumos_df=base_desde_catalogo(cat),
   )
+  ss["partidas"].append(nueva)
+  ss["partida_activa"] = len(ss["partidas"]) - 1
+  ss["ver"] += 1
+
+
+def cb_eliminar_partida():
+  ss = st.session_state
+  if len(ss["partidas"]) <= 1:
+    return
+  idx = min(ss["partida_activa"], len(ss["partidas"]) - 1)
+  ss["partidas"].pop(idx)
+  ss["partida_activa"] = max(0, min(idx, len(ss["partidas"]) - 1))
+  ss["ver"] += 1
 
 
 def cb_nueva():
@@ -872,73 +1083,157 @@ def cb_nueva():
   ss["ver"] = ver
 
 
-# ----------------------------------------------------------------------------
-# Cálculo
-# ----------------------------------------------------------------------------
-def calcular(
-    df_sel,
-    costo_mo_base,
-    factor_urg,
-    pct_herr,
-    pct_ind,
-    pct_gar,
-    pct_uti,
-    regimen,
-) -> dict:
-  es_mat = df_sel["tipo_insumo"] == "Material"
-  costo_mat = df_sel.loc[es_mat, "Importe"].sum()
-  costo_eq = df_sel.loc[~es_mat, "Importe"].sum()
+def cb_cargar(folio: str):
+  ss = st.session_state
+  cot, partidas_db, insumos_db = obtener_cotizacion_completa(folio)
+  if not cot:
+    ss["msg_historial"] = ("error", f"No se encontró la cotización {folio}.")
+    return
 
-  con_fac = df_sel.loc[df_sel["con_factura"], "Importe"].sum()
-  sin_fac = df_sel.loc[~df_sel["con_factura"], "Importe"].sum()
-  iva_acreditable = con_fac * IVA
+  cat = cargar_catalogo()
+  ss["folio"] = cot["folio"]
+  ss["cliente"] = cot["cliente"]
+  ss["ubicacion"] = cot["ubicacion"] or ""
+  ss["sobrescribir"] = False
 
-  costo_mo = costo_mo_base * factor_urg
-  herr = costo_mo * pct_herr
-  cd = costo_mat + costo_eq + costo_mo + herr
-  ci = cd * pct_ind
-  gar = (cd + ci) * pct_gar
-  uti = (cd + ci + gar) * pct_uti
-  subtotal = cd + ci + gar + uti
-  iva_tras = subtotal * IVA
-  total = subtotal + iva_tras
+  partidas_cargadas = []
+  if partidas_db:
+    ins_por_partida = {}
+    for ins in insumos_db:
+      ins_por_partida.setdefault(ins["partida_id"], []).append(ins)
 
-  iva_pagar = max(0.0, iva_tras - iva_acreditable)
-  isr = subtotal * ISR_RESICO if "RESICO" in regimen else max(0.0, uti * ISR_ACT_EMP)
-  desembolso = con_fac * (1 + IVA) + sin_fac
-  ganancia = total - desembolso - iva_pagar - isr
-  return {
-      "costo_mat": costo_mat,
-      "costo_eq": costo_eq,
-      "costo_mo": costo_mo,
-      "herr": herr,
-      "cd": cd,
-      "ci": ci,
-      "gar": gar,
-      "uti": uti,
-      "subtotal": subtotal,
-      "iva_tras": iva_tras,
-      "total": total,
-      "iva_pagar": iva_pagar,
-      "isr": isr,
-      "ganancia": ganancia,
-      "ganancia_sin_mo": ganancia - costo_mo,
-  }
+    for pdb in partidas_db:
+      pp = pdb["parametros"] or {}
+      esq = pp.get("esquema", NOMBRES_ESQUEMA[0])
+      if esq not in ESQUEMAS:
+        esq = NOMBRES_ESQUEMA[0]
+      e_idx = NOMBRES_ESQUEMA.index(esq)
+      th = {}
+      for i, (t, h) in enumerate(zip(pp.get("tarifas", []), pp.get("horas", []))):
+        th[f"mo_t_{e_idx}_{i}"] = float(t)
+        th[f"mo_h_{e_idx}_{i}"] = float(h)
+
+      ins_p = ins_por_partida.get(pdb["id"], [])
+      filas = [
+          {
+              "Concepto": i["concepto"],
+              "tipo_insumo": _tipo(i.get("tipo_insumo")),
+              "unidad": i["unidad"],
+              "costo_sin_iva": i["costo_sin_iva"],
+              "con_factura": i["con_factura"],
+              "Cantidad": i["cantidad"],
+          }
+          for i in ins_p
+      ]
+      usados_names = {i["concepto"] for i in ins_p}
+      for _, r in cat.iterrows():
+        if r["concepto"] not in usados_names:
+          filas.append({
+              "Concepto": r["concepto"],
+              "tipo_insumo": _tipo(r.get("tipo_insumo")),
+              "unidad": r["unidad"],
+              "costo_sin_iva": r["costo_sin_iva"],
+              "con_factura": r["con_factura"],
+              "Cantidad": 0.0,
+          })
+
+      partidas_cargadas.append(
+          _nueva_partida_estado(
+              nombre=pdb["nombre"],
+              unidad=pdb["unidad"] or "Serv",
+              cantidad=float(pdb["cantidad"] or 1.0),
+              esquema=esq,
+              factor_urg=float(pp.get("factor_urg", 1.25)),
+              pct_herr=_clamp(pp.get("pct_herr", 3), 0, 10),
+              pct_ind=_clamp(pp.get("pct_ind", 12), 0, 30),
+              pct_gar=_clamp(pp.get("pct_gar", 5), 0, 15),
+              pct_uti=_clamp(pp.get("pct_uti", 25), 5, 60),
+              regimen=pp.get("regimen"),
+              dividir=bool(pp.get("dividir", True)),
+              pct_ing_1=_clamp(pp.get("pct_ing_1", 50), 0, 100),
+              insumos_df=pd.DataFrame(filas, columns=COLS_SEL),
+              tarifas_horas=th,
+          )
+      )
+  else:
+    p_leg = cot["parametros"] or {}
+    esq = p_leg.get("esquema", NOMBRES_ESQUEMA[0])
+    if esq not in ESQUEMAS:
+      esq = NOMBRES_ESQUEMA[0]
+    e_idx = NOMBRES_ESQUEMA.index(esq)
+    th = {}
+    for i, (t, h) in enumerate(
+        zip(p_leg.get("tarifas", []), p_leg.get("horas", []))
+    ):
+      th[f"mo_t_{e_idx}_{i}"] = float(t)
+      th[f"mo_h_{e_idx}_{i}"] = float(h)
+    filas = [
+        {
+            "Concepto": i["concepto"],
+            "tipo_insumo": _tipo(i.get("tipo_insumo")),
+            "unidad": i["unidad"],
+            "costo_sin_iva": i["costo_sin_iva"],
+            "con_factura": i["con_factura"],
+            "Cantidad": i["cantidad"],
+        }
+        for i in insumos_db
+    ]
+    usados_names = {i["concepto"] for i in insumos_db}
+    for _, r in cat.iterrows():
+      if r["concepto"] not in usados_names:
+        filas.append({
+            "Concepto": r["concepto"],
+            "tipo_insumo": _tipo(r.get("tipo_insumo")),
+            "unidad": r["unidad"],
+            "costo_sin_iva": r["costo_sin_iva"],
+            "con_factura": r["con_factura"],
+            "Cantidad": 0.0,
+        })
+    partidas_cargadas.append(
+        _nueva_partida_estado(
+            nombre=cot["descripcion_servicio"] or "Partida 1",
+            unidad="Serv",
+            cantidad=1.0,
+            esquema=esq,
+            factor_urg=float(cot["factor_urgencia"] or 1.25),
+            pct_herr=_clamp(p_leg.get("pct_herr", 3), 0, 10),
+            pct_ind=_clamp(p_leg.get("pct_ind", 12), 0, 30),
+            pct_gar=_clamp(p_leg.get("pct_gar", 5), 0, 15),
+            pct_uti=_clamp(p_leg.get("pct_uti", 25), 5, 60),
+            regimen=p_leg.get("regimen"),
+            dividir=bool(p_leg.get("dividir", True)),
+            pct_ing_1=_clamp(p_leg.get("pct_ing_1", 50), 0, 100),
+            insumos_df=pd.DataFrame(filas, columns=COLS_SEL),
+            tarifas_horas=th,
+        )
+    )
+
+  ss["partidas"] = partidas_cargadas
+  ss["partida_activa"] = 0
+  ss["ver"] += 1
+  ss["cot_cargada"] = cot["folio"]
+  ss["msg_historial"] = (
+      "success",
+      f"Cotización {folio} cargada con {len(partidas_cargadas)} partida(s).",
+  )
 
 
 # ----------------------------------------------------------------------------
 # Interfaz
 # ----------------------------------------------------------------------------
 ss = st.session_state
-tab1, tab2, tab3 = st.tabs(
-    ["1. Catálogo", "2. Nueva Cotización", "3. Historial"]
-)
+tab1, tab2, tab3, tab4 = st.tabs([
+    "1. Catálogo",
+    "2. Cotización y APU",
+    "3. Explosión de Insumos",
+    "4. Historial",
+])
 
 with tab1:
-  st.subheader("Catálogo")
+  st.subheader("Catálogo de Insumos y Equipos")
   st.caption(
-      "Para eliminar un insumo, selecciona la fila y presiona Supr. Las"
-      " cotizaciones anteriores conservan su copia del precio."
+      "Clasifica cada concepto como **Material** o **Equipo / Herramienta**."
+      " Para eliminar una fila, selecciónala y presiona Supr."
   )
   df_cat = cargar_catalogo()
   df_editado = tabla(
@@ -975,17 +1270,96 @@ with tab1:
       st.success("Catálogo actualizado.")
       st.rerun()
 
+# Evaluamos todas las partidas para tener totales y explosión disponibles en todas las pestañas
+cat_actual = cargar_catalogo()
+partidas_resumen = []
+
+for idx_p, p_state in enumerate(ss["partidas"]):
+  base_p = (
+      p_state["insumos_df"].copy()
+      if p_state["insumos_df"] is not None
+      else base_desde_catalogo(cat_actual)
+  )
+  base_p["Cantidad"] = base_p["Cantidad"].fillna(0.0).astype(float)
+  base_p["tipo_insumo"] = base_p["tipo_insumo"].apply(_tipo)
+  base_p["costo_sin_iva"] = base_p["costo_sin_iva"].astype(float)
+  base_p["con_factura"] = base_p["con_factura"].fillna(True).astype(bool)
+  base_p["Importe"] = base_p["costo_sin_iva"] * base_p["Cantidad"]
+
+  esq_p = (
+      p_state["esquema"]
+      if p_state["esquema"] in ESQUEMAS
+      else NOMBRES_ESQUEMA[0]
+  )
+  e_i = NOMBRES_ESQUEMA.index(esq_p)
+  personas_p = ESQUEMAS[esq_p]
+  tarifas_p, horas_p = [], []
+  for j in range(len(personas_p)):
+    tarifas_p.append(float(p_state.get(f"mo_t_{e_i}_{j}", 300.0)))
+    horas_p.append(float(p_state.get(f"mo_h_{e_i}_{j}", 4.0)))
+  mo_base_p = sum(t * h for t, h in zip(tarifas_p, horas_p))
+
+  res_p = calcular_partida(
+      df_sel=base_p,
+      cantidad_partida=float(p_state.get("cantidad", 1.0)),
+      costo_mo_base=mo_base_p,
+      factor_urg=float(p_state.get("factor_urg", 1.25)),
+      pct_herr=float(p_state.get("pct_herr", 3)) / 100.0,
+      pct_ind=float(p_state.get("pct_ind", 12)) / 100.0,
+      pct_gar=float(p_state.get("pct_gar", 5)) / 100.0,
+      pct_uti=float(p_state.get("pct_uti", 25)) / 100.0,
+      regimen=p_state.get("regimen", REGIMENES[0]),
+  )
+
+  partidas_resumen.append({
+      "idx": idx_p,
+      "nombre": p_state.get("nombre", f"Partida {idx_p + 1}"),
+      "unidad": p_state.get("unidad", "Serv"),
+      "cantidad": float(p_state.get("cantidad", 1.0)),
+      "df_sel": base_p,
+      "res": res_p,
+      "parametros_partida": {
+          "version": 5,
+          "esquema": esq_p,
+          "tarifas": tarifas_p,
+          "horas": horas_p,
+          "factor_urg": float(p_state.get("factor_urg", 1.25)),
+          "pct_herr": int(p_state.get("pct_herr", 3)),
+          "pct_ind": int(p_state.get("pct_ind", 12)),
+          "pct_gar": int(p_state.get("pct_gar", 5)),
+          "pct_uti": int(p_state.get("pct_uti", 25)),
+          "regimen": p_state.get("regimen", REGIMENES[0]),
+          "dividir": bool(p_state.get("dividir", True)),
+          "pct_ing_1": int(p_state.get("pct_ing_1", 50)),
+      },
+  })
+
+df_explosion = construir_explosion(partidas_resumen)
+
+tot_cd = sum(x["res"]["cd"] for x in partidas_resumen)
+tot_ci = sum(x["res"]["ci"] for x in partidas_resumen)
+tot_gar = sum(x["res"]["gar"] for x in partidas_resumen)
+tot_uti = sum(x["res"]["uti"] for x in partidas_resumen)
+tot_sub = sum(x["res"]["subtotal"] for x in partidas_resumen)
+tot_iva = sum(x["res"]["iva_tras"] for x in partidas_resumen)
+tot_fac = sum(x["res"]["total"] for x in partidas_resumen)
+tot_iva_pag = sum(x["res"]["iva_pagar"] for x in partidas_resumen)
+tot_isr = sum(x["res"]["isr"] for x in partidas_resumen)
+tot_gan = sum(x["res"]["ganancia"] for x in partidas_resumen)
+tot_mo = sum(x["res"]["costo_mo"] for x in partidas_resumen)
+tot_gan_sin_mo = sum(x["res"]["ganancia_sin_mo"] for x in partidas_resumen)
+
 with tab2:
-  df_cat2 = cargar_catalogo()
-  if df_cat2.empty and ss["base_df"] is None:
-    st.warning("Primero agrega insumos en la pestaña «Catálogo».")
+  if cat_actual.empty and all(
+      ps["insumos_df"] is None for ps in ss["partidas"]
+  ):
+    st.warning("Primero agrega insumos en la pestaña «1. Catálogo».")
   else:
     if ss["cot_cargada"]:
       c_a, c_b = st.columns([4, 1])
       c_a.info(
-          f"Editando la cotización cargada **{ss['cot_cargada']}**. Para"
-          " reemplazarla marca «Actualizar si el folio ya existe»; para crear"
-          " una nueva borra el folio."
+          f"Editando **{ss['cot_cargada']}**. Marca «Actualizar si el folio ya"
+          " existe» para sobrescribir o borra el folio para crear uno nuevo."
       )
       c_b.button("➕ Nueva cotización", on_click=cb_nueva)
 
@@ -995,19 +1369,87 @@ with tab2:
         key="folio",
         max_chars=30,
         placeholder="Automático al guardar (COT-AAAA-0001)",
-        help="Déjalo vacío para que se asigne el siguiente folio consecutivo.",
     )
     c2.text_input("Cliente", key="cliente", max_chars=150)
     c3.text_input("Ubicación", key="ubicacion", max_chars=120)
 
-    base = (
-        ss["base_df"].copy()
-        if ss["base_df"] is not None
-        else base_desde_catalogo(df_cat2)
+    st.markdown("### Partidas del presupuesto")
+    df_partidas_tabla = pd.DataFrame([
+        {
+            "#": x["idx"] + 1,
+            "Partida / Concepto": x["nombre"],
+            "Unidad": x["unidad"],
+            "Cantidad": x["cantidad"],
+            "P.U. s/IVA": x["res"]["pu_sin_iva"],
+            "Importe s/IVA": x["res"]["subtotal"],
+            "Ganancia Libre": x["res"]["ganancia"],
+        }
+        for x in partidas_resumen
+    ])
+    tabla(
+        st.dataframe,
+        df_partidas_tabla,
+        column_config={
+            "Cantidad": st.column_config.NumberColumn(format="%.2f"),
+            "P.U. s/IVA": st.column_config.NumberColumn(format="$%.2f"),
+            "Importe s/IVA": st.column_config.NumberColumn(format="$%.2f"),
+            "Ganancia Libre": st.column_config.NumberColumn(format="$%.2f"),
+        },
     )
-    seleccion = tabla(
+
+    pa1, pa2, pa3 = st.columns([3, 1, 1])
+    opciones_p = [
+        f"Partida {i + 1}: {p.get('nombre', '')[:45]}"
+        for i, p in enumerate(ss["partidas"])
+    ]
+    sel_p_idx = pa1.selectbox(
+        "Seleccionar partida para editar su APU",
+        range(len(opciones_p)),
+        index=min(ss["partida_activa"], len(opciones_p) - 1),
+        format_func=lambda i: opciones_p[i],
+    )
+    ss["partida_activa"] = sel_p_idx
+    pa2.button(
+        "➕ Agregar partida",
+        on_click=cb_agregar_partida,
+        args=(cat_actual,),
+        use_container_width=True,
+    )
+    pa3.button(
+        "🗑️ Quitar partida",
+        on_click=cb_eliminar_partida,
+        disabled=len(ss["partidas"]) <= 1,
+        use_container_width=True,
+    )
+
+    p_cur = ss["partidas"][ss["partida_activa"]]
+    st.markdown(f"#### APU — Partida {ss['partida_activa'] + 1}")
+    pn1, pn2, pn3 = st.columns([4, 1, 1])
+    p_cur["nombre"] = pn1.text_input(
+        "Concepto de la partida",
+        value=p_cur["nombre"],
+        key=f"p_nom_{ss['partida_activa']}_{ss['ver']}",
+    )
+    p_cur["unidad"] = pn2.text_input(
+        "Unidad",
+        value=p_cur["unidad"],
+        max_chars=20,
+        key=f"p_uni_{ss['partida_activa']}_{ss['ver']}",
+    )
+    p_cur["cantidad"] = pn3.number_input(
+        "Cantidad de partida",
+        min_value=0.0,
+        step=0.5,
+        value=float(p_cur["cantidad"]),
+        format="%.2f",
+        key=f"p_cant_{ss['partida_activa']}_{ss['ver']}",
+    )
+
+    df_edit_p = tabla(
         st.data_editor,
-        base,
+        p_cur["insumos_df"]
+        if p_cur["insumos_df"] is not None
+        else base_desde_catalogo(cat_actual),
         column_config={
             "tipo_insumo": st.column_config.TextColumn("Tipo"),
             "unidad": "Unidad",
@@ -1026,206 +1468,220 @@ with tab2:
             "costo_sin_iva",
             "con_factura",
         ],
-        key=f"sel_{ss['ver']}",
+        key=f"apu_ins_{ss['partida_activa']}_{ss['ver']}",
     ).copy()
-    seleccion["Cantidad"] = seleccion["Cantidad"].fillna(0.0).astype(float)
-    seleccion["tipo_insumo"] = seleccion["tipo_insumo"].apply(_tipo)
-    seleccion["costo_sin_iva"] = seleccion["costo_sin_iva"].astype(float)
-    seleccion["con_factura"] = seleccion["con_factura"].fillna(True).astype(bool)
-    seleccion["Importe"] = seleccion["costo_sin_iva"] * seleccion["Cantidad"]
+    df_edit_p["Cantidad"] = df_edit_p["Cantidad"].fillna(0.0).astype(float)
+    df_edit_p["Importe"] = df_edit_p["costo_sin_iva"] * df_edit_p["Cantidad"]
+    p_cur["insumos_df"] = df_edit_p
 
     col_mo, col_calc = st.columns(2)
     with col_mo:
-      st.markdown("**Mano de obra**")
-      esquema = st.selectbox(
+      st.markdown("**Mano de obra de la partida**")
+      esq_sel = st.selectbox(
           "Esquema de mano de obra",
           NOMBRES_ESQUEMA,
-          key="esquema",
-          help=(
-              "Elige quiénes participaron para calcular el costo directo de mano"
-              " de obra."
-          ),
+          index=NOMBRES_ESQUEMA.index(p_cur["esquema"]),
+          key=f"p_esq_{ss['partida_activa']}_{ss['ver']}",
       )
-      e_idx = NOMBRES_ESQUEMA.index(esquema)
-      personas = ESQUEMAS[esquema]
-      tarifas, horas = [], []
-      for i, (nombre, _, ayuda) in enumerate(personas):
-        tarifas.append(
-            st.number_input(
-                f"Tarifa {nombre} ($/hr)",
-                min_value=0.0,
-                step=10.0,
-                key=f"t_{e_idx}_{i}",
-                help=ayuda,
-            )
+      p_cur["esquema"] = esq_sel
+      e_idx_p = NOMBRES_ESQUEMA.index(esq_sel)
+      personas_p = ESQUEMAS[esq_sel]
+      tarifas_in, horas_in = [], []
+      for j, (nombre_per, _, ayuda_per) in enumerate(personas_p):
+        t_key = f"mo_t_{e_idx_p}_{j}"
+        h_key = f"mo_h_{e_idx_p}_{j}"
+        t_val = st.number_input(
+            f"Tarifa {nombre_per} ($/hr)",
+            min_value=0.0,
+            step=10.0,
+            value=float(p_cur.get(t_key, 300.0)),
+            help=ayuda_per,
+            key=f"ui_{t_key}_{ss['partida_activa']}_{ss['ver']}",
         )
-        horas.append(
-            st.number_input(
-                f"Horas {nombre}",
-                min_value=0.0,
-                step=0.5,
-                key=f"h_{e_idx}_{i}",
-                help=f"Horas estimadas de {nombre}.",
-            )
+        h_val = st.number_input(
+            f"Horas {nombre_per}",
+            min_value=0.0,
+            step=0.5,
+            value=float(p_cur.get(h_key, 4.0)),
+            key=f"ui_{h_key}_{ss['partida_activa']}_{ss['ver']}",
         )
-      costo_mo_base = sum(t * h for t, h in zip(tarifas, horas))
+        p_cur[t_key] = float(t_val)
+        p_cur[h_key] = float(h_val)
+        tarifas_in.append(float(t_val))
+        horas_in.append(float(h_val))
 
-      opciones = sorted(set(FACTORES_URGENCIA + [float(ss["factor_urg"])]))
-      factor_urg = st.selectbox(
+      ops_urg = sorted(set(FACTORES_URGENCIA + [float(p_cur["factor_urg"])]))
+      p_cur["factor_urg"] = st.selectbox(
           "Factor urgencia / prioridad",
-          opciones,
-          key="factor_urg",
-          help=(
-              "Multiplicador sobre la mano de obra por urgencia o atención fuera"
-              " de horario."
-          ),
+          ops_urg,
+          index=ops_urg.index(float(p_cur["factor_urg"])),
+          key=f"p_urg_{ss['partida_activa']}_{ss['ver']}",
       )
 
-      dividir = False
-      pct_1 = 100
-      if len(personas) == 2:
-        n1, n2 = personas[0][0], personas[1][0]
-        dividir = st.checkbox(
-            f"Dividir la ganancia libre entre {n1} y {n2}",
-            key="dividir",
-            help="Reparte la ganancia libre real entre los dos participantes.",
+      div_p = False
+      pct1_p = 100
+      if len(personas_p) == 2:
+        n1, n2 = personas_p[0][0], personas_p[1][0]
+        div_p = st.checkbox(
+            f"Dividir ganancia libre de la partida entre {n1} y {n2}",
+            value=bool(p_cur["dividir"]),
+            key=f"p_div_{ss['partida_activa']}_{ss['ver']}",
         )
-        if dividir:
-          pct_1 = st.slider(
-              f"Porcentaje de ganancia para {n1} (%)",
+        p_cur["dividir"] = div_p
+        if div_p:
+          pct1_p = st.slider(
+              f"Porcentaje para {n1} (%)",
               0,
               100,
-              key="pct_ing_1",
-              help=f"El resto va a {n2}.",
+              value=_clamp(p_cur["pct_ing_1"], 0, 100),
+              key=f"p_pct1_{ss['partida_activa']}_{ss['ver']}",
           )
-      pct_2 = 100 - pct_1
+          p_cur["pct_ing_1"] = int(pct1_p)
 
     with col_calc:
-      st.markdown("**Indirectos, margen y SAT**")
-      pct_herr = (
-          st.slider(
-              "Herramienta menor (% de la mano de obra)",
-              0,
-              10,
-              key="pct_herr",
-              help=(
-                  "Desgaste de herramienta menor, calculado sobre la mano de"
-                  " obra."
-              ),
-          )
-          / 100
+      st.markdown("**Indirectos, margen y SAT de la partida**")
+      p_cur["pct_herr"] = st.slider(
+          "Herramienta menor (% de MO)",
+          0,
+          10,
+          value=_clamp(p_cur["pct_herr"], 0, 10),
+          key=f"p_herr_{ss['partida_activa']}_{ss['ver']}",
       )
-      pct_ind = (
-          st.slider(
-              "Indirectos (%)",
-              0,
-              30,
-              key="pct_ind",
-              help="Gastos operativos generales, aplicados sobre el Costo Directo.",
-          )
-          / 100
+      p_cur["pct_ind"] = st.slider(
+          "Indirectos (%)",
+          0,
+          30,
+          value=_clamp(p_cur["pct_ind"], 0, 30),
+          key=f"p_ind_{ss['partida_activa']}_{ss['ver']}",
       )
-      pct_gar = (
-          st.slider(
-              "Garantía / contingencia (%)",
-              0,
-              15,
-              key="pct_gar",
-              help=(
-                  "Colchón por revisiones o imprevistos, sobre Costo Directo +"
-                  " Indirectos."
-              ),
-          )
-          / 100
+      p_cur["pct_gar"] = st.slider(
+          "Garantía / contingencia (%)",
+          0,
+          15,
+          value=_clamp(p_cur["pct_gar"], 0, 15),
+          key=f"p_gar_{ss['partida_activa']}_{ss['ver']}",
       )
-      pct_uti = (
-          st.slider(
-              "Utilidad (%)",
-              5,
-              60,
-              key="pct_uti",
-              help=(
-                  "Se aplica sobre Costo Directo + Indirectos + Garantía"
-                  " (markup, no margen): 25% de utilidad equivale a ~20% de"
-                  " margen sobre el precio de venta."
-              ),
-          )
-          / 100
+      p_cur["pct_uti"] = st.slider(
+          "Utilidad (%)",
+          5,
+          60,
+          value=_clamp(p_cur["pct_uti"], 5, 60),
+          key=f"p_uti_{ss['partida_activa']}_{ss['ver']}",
       )
-      regimen = st.radio(
+      p_cur["regimen"] = st.radio(
           "Régimen",
           REGIMENES,
-          key="regimen",
-          help=(
-              "Estimación orientativa de ISR; confírmala con tu contador"
-              " (retenciones a personas morales, etc.)."
-          ),
+          index=REGIMENES.index(p_cur["regimen"]),
+          key=f"p_reg_{ss['partida_activa']}_{ss['ver']}",
       )
 
-    st.text_area("Concepto para cotización / factura", key="desc")
-
-    r = calcular(
-        seleccion,
-        costo_mo_base,
-        factor_urg,
-        pct_herr,
-        pct_ind,
-        pct_gar,
-        pct_uti,
-        regimen,
+    # Recalcular partida activa con los valores recién editados
+    res_act = calcular_partida(
+        df_sel=df_edit_p,
+        cantidad_partida=float(p_cur["cantidad"]),
+        costo_mo_base=sum(t * h for t, h in zip(tarifas_in, horas_in)),
+        factor_urg=float(p_cur["factor_urg"]),
+        pct_herr=float(p_cur["pct_herr"]) / 100.0,
+        pct_ind=float(p_cur["pct_ind"]) / 100.0,
+        pct_gar=float(p_cur["pct_gar"]) / 100.0,
+        pct_uti=float(p_cur["pct_uti"]) / 100.0,
+        regimen=p_cur["regimen"],
     )
+    partidas_resumen[ss["partida_activa"]]["nombre"] = p_cur["nombre"]
+    partidas_resumen[ss["partida_activa"]]["unidad"] = p_cur["unidad"]
+    partidas_resumen[ss["partida_activa"]]["cantidad"] = float(
+        p_cur["cantidad"]
+    )
+    partidas_resumen[ss["partida_activa"]]["df_sel"] = df_edit_p
+    partidas_resumen[ss["partida_activa"]]["res"] = res_act
+    partidas_resumen[ss["partida_activa"]]["parametros_partida"] = {
+        "version": 5,
+        "esquema": esq_sel,
+        "tarifas": tarifas_in,
+        "horas": horas_in,
+        "factor_urg": float(p_cur["factor_urg"]),
+        "pct_herr": int(p_cur["pct_herr"]),
+        "pct_ind": int(p_cur["pct_ind"]),
+        "pct_gar": int(p_cur["pct_gar"]),
+        "pct_uti": int(p_cur["pct_uti"]),
+        "regimen": p_cur["regimen"],
+        "dividir": bool(p_cur["dividir"]),
+        "pct_ing_1": int(p_cur["pct_ing_1"]),
+    }
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Costo Directo", f"${r['cd']:,.2f}")
-    m2.metric("Subtotal s/IVA", f"${r['subtotal']:,.2f}")
-    m3.metric("Total c/IVA", f"${r['total']:,.2f}")
-    m4.metric("Ganancia libre (incluye tu MO)", f"${r['ganancia']:,.2f}")
+    df_explosion = construir_explosion(partidas_resumen)
+    tot_cd = sum(x["res"]["cd"] for x in partidas_resumen)
+    tot_ci = sum(x["res"]["ci"] for x in partidas_resumen)
+    tot_gar = sum(x["res"]["gar"] for x in partidas_resumen)
+    tot_uti = sum(x["res"]["uti"] for x in partidas_resumen)
+    tot_sub = sum(x["res"]["subtotal"] for x in partidas_resumen)
+    tot_iva = sum(x["res"]["iva_tras"] for x in partidas_resumen)
+    tot_fac = sum(x["res"]["total"] for x in partidas_resumen)
+    tot_iva_pag = sum(x["res"]["iva_pagar"] for x in partidas_resumen)
+    tot_isr = sum(x["res"]["isr"] for x in partidas_resumen)
+    tot_gan = sum(x["res"]["ganancia"] for x in partidas_resumen)
+    tot_mo = sum(x["res"]["costo_mo"] for x in partidas_resumen)
+    tot_gan_sin_mo = sum(x["res"]["ganancia_sin_mo"] for x in partidas_resumen)
+
     st.caption(
-        f"Materiales: **${r['costo_mat']:,.2f}** · Equipo / Herramienta:"
-        f" **${r['costo_eq']:,.2f}** · Mano de obra:"
-        f" **${r['costo_mo']:,.2f}** · Si pagas la MO como sueldo, queda"
-        f" libre **${r['ganancia_sin_mo']:,.2f}**."
+        f"**APU Partida {ss['partida_activa'] + 1}:** P.U. s/IVA ="
+        f" **${res_act['pu_sin_iva']:,.2f}** · Importe partida ="
+        f" **${res_act['subtotal']:,.2f}** · Ganancia partida ="
+        f" **${res_act['ganancia']:,.2f}**"
     )
 
-    if r["ganancia"] < 0:
-      st.error(
-          "La ganancia libre es negativa: esta cotización genera pérdida. Revisa"
-          " utilidad, indirectos o costos."
-      )
-    elif r["ganancia_sin_mo"] < 0:
-      st.warning(
-          "Después de pagar la mano de obra, la ganancia libre queda en negativo."
-      )
+    st.divider()
+    st.markdown("### Totales del presupuesto completo")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Costo Directo Total", f"${tot_cd:,.2f}")
+    m2.metric("Subtotal s/IVA", f"${tot_sub:,.2f}")
+    m3.metric("Total c/IVA", f"${tot_fac:,.2f}")
+    m4.metric("Ganancia Libre Total", f"${tot_gan:,.2f}")
+    st.caption(
+        f"Mano de obra acumulada: **${tot_mo:,.2f}** · Ganancia libre sin"
+        f" contar tu MO como sueldo: **${tot_gan_sin_mo:,.2f}**."
+    )
 
-    if dividir:
-      p1 = max(0.0, r["ganancia"] * pct_1 / 100)
-      p2 = max(0.0, r["ganancia"] * pct_2 / 100)
+    if p_cur["dividir"] and len(personas_p) == 2:
+      p1_val = max(0.0, res_act["ganancia"] * int(p_cur["pct_ing_1"]) / 100.0)
+      p2_val = max(
+          0.0, res_act["ganancia"] * (100 - int(p_cur["pct_ing_1"])) / 100.0
+      )
       r1, r2 = st.columns(2)
-      r1.info(f"{personas[0][0]} ({pct_1}%): **${p1:,.2f} MXN**")
-      r2.info(f"{personas[1][0]} ({pct_2}%): **${p2:,.2f} MXN**")
+      r1.info(
+          f"{personas_p[0][0]} ({p_cur['pct_ing_1']}%) en Partida"
+          f" {ss['partida_activa'] + 1}: **${p1_val:,.2f} MXN**"
+      )
+      r2.info(
+          f"{personas_p[1][0]} ({100 - int(p_cur['pct_ing_1'])}%) en Partida"
+          f" {ss['partida_activa'] + 1}: **${p2_val:,.2f} MXN**"
+      )
 
     st.checkbox("Actualizar si el folio ya existe", key="sobrescribir")
 
     r2f = lambda x: round(float(x), 2)
-    datos_actuales = {
+    resumen_text = " | ".join(
+        f"{x['nombre']} ({x['cantidad']:g} {x['unidad']})"
+        for x in partidas_resumen
+    )
+    datos_totales = {
         "folio": ss["folio"].strip(),
         "cliente": ss["cliente"].strip() or "Cliente Residencial",
         "ubicacion": ss["ubicacion"].strip() or "Colima",
-        "descripcion_servicio": ss["desc"],
-        "factor_urgencia": r2f(factor_urg),
-        "costo_directo": r2f(r["cd"]),
-        "indirectos_monto": r2f(r["ci"]),
-        "garantia_monto": r2f(r["gar"]),
-        "utilidad_monto": r2f(r["uti"]),
-        "subtotal": r2f(r["subtotal"]),
-        "iva_trasladado": r2f(r["iva_tras"]),
-        "total_facturado": r2f(r["total"]),
-        "iva_por_pagar": r2f(r["iva_pagar"]),
-        "isr_estimado": r2f(r["isr"]),
-        "ganancia_neta_libre": r2f(r["ganancia"]),
+        "descripcion_servicio": resumen_text,
+        "factor_urgencia": r2f(p_cur["factor_urg"]),
+        "costo_directo": r2f(tot_cd),
+        "indirectos_monto": r2f(tot_ci),
+        "garantia_monto": r2f(tot_gar),
+        "utilidad_monto": r2f(tot_uti),
+        "subtotal": r2f(tot_sub),
+        "iva_trasladado": r2f(tot_iva),
+        "total_facturado": r2f(tot_fac),
+        "iva_por_pagar": r2f(tot_iva_pag),
+        "isr_estimado": r2f(tot_isr),
+        "ganancia_neta_libre": r2f(tot_gan),
     }
-    usados_actual = seleccion[seleccion["Cantidad"] > 0]
-    nombre_archivo = datos_actuales["folio"] or "cotizacion_borrador"
+    nombre_archivo = datos_totales["folio"] or "cotizacion_multipartida"
 
     b1, b2, b3 = st.columns(3)
     with b1:
@@ -1233,60 +1689,40 @@ with tab2:
         cliente_val = ss["cliente"].strip()
         if not cliente_val:
           st.error("Captura el nombre del cliente.")
-        elif r["cd"] <= 0:
-          st.error(
-              "El costo directo es cero: agrega cantidades o mano de obra."
-          )
+        elif tot_cd <= 0:
+          st.error("El costo directo total es cero.")
         else:
-          parametros = {
-              "version": 4,
-              "esquema": esquema,
-              "tarifas": tarifas,
-              "horas": horas,
-              "factor_urg": factor_urg,
-              "pct_herr": round(pct_herr * 100, 2),
-              "pct_ind": round(pct_ind * 100, 2),
-              "pct_gar": round(pct_gar * 100, 2),
-              "pct_uti": round(pct_uti * 100, 2),
-              "regimen": regimen,
-              "dividir": dividir,
-              "pct_ing_1": pct_1,
-              "iva": IVA,
-              "costo_mo": r2f(r["costo_mo"]),
-              "herramienta_menor": r2f(r["herr"]),
-              "ganancia_sin_mo": r2f(r["ganancia_sin_mo"]),
-          }
           try:
-            folio_final = guardar_cotizacion(
-                {**datos_actuales, "cliente": cliente_val},
-                seleccion,
-                parametros,
+            folio_final = guardar_cotizacion_multipartida(
+                {**datos_totales, "cliente": cliente_val},
+                partidas_resumen,
+                {
+                    "version": 5,
+                    "num_partidas": len(partidas_resumen),
+                    "ganancia_sin_mo": r2f(tot_gan_sin_mo),
+                },
                 ss["sobrescribir"],
             )
             ss["folio"] = folio_final
-            st.success(f"Cotización {folio_final} guardada.")
+            st.success(f"Cotización {folio_final} guardada con partidas.")
           except errors.UniqueViolation:
             st.error(
-                f"Ya existe una cotización con el folio {datos_actuales['folio']}."
-                " Borra el folio para asignar uno nuevo o marca «Actualizar si"
-                " el folio ya existe»."
+                f"Ya existe el folio {datos_totales['folio']}. Borra el folio"
+                " para uno nuevo o marca «Actualizar si el folio ya existe»."
             )
           except errors.UndefinedTable:
             st.error(
-                f"No existe el folio {datos_actuales['folio']} para"
-                " actualizar. Desmarca «Actualizar si el folio ya existe» para"
-                " crearlo."
+                f"No existe el folio {datos_totales['folio']} para actualizar."
             )
           except psycopg2.Error as exc:
-            st.error(
-                "No se pudo guardar en la base de datos:"
-                f" {exc.__class__.__name__}"
-            )
+            st.error(f"Error de base de datos: {exc.__class__.__name__}")
 
     with b2:
       st.download_button(
           label="📊 Descargar Excel (.xlsx)",
-          data=generar_excel_cotizacion(datos_actuales, usados_actual),
+          data=generar_excel_cotizacion(
+              datos_totales, partidas_resumen, df_explosion
+          ),
           file_name=f"{nombre_archivo}.xlsx",
           mime=(
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1297,13 +1733,47 @@ with tab2:
     with b3:
       st.download_button(
           label="📄 Descargar PDF (.pdf)",
-          data=generar_pdf_cotizacion(datos_actuales, usados_actual),
+          data=generar_pdf_cotizacion(
+              datos_totales, partidas_resumen, df_explosion
+          ),
           file_name=f"{nombre_archivo}.pdf",
           mime="application/pdf",
           use_container_width=True,
       )
 
 with tab3:
+  st.subheader("Explosión de Insumos del Presupuesto")
+  st.caption(
+      "Consolidado total sumando todas las partidas y multiplicando por la"
+      " cantidad de cada partida."
+  )
+  if df_explosion.empty:
+    st.info("No hay insumos con cantidad mayor a 0 en ninguna partida.")
+  else:
+    tabla(
+        st.dataframe,
+        df_explosion,
+        column_config={
+            "Cantidad Total": st.column_config.NumberColumn(format="%.2f"),
+            "P.U. s/IVA": st.column_config.NumberColumn(format="$%.2f"),
+            "Importe Total": st.column_config.NumberColumn(format="$%.2f"),
+        },
+    )
+    e1, e2, e3 = st.columns(3)
+    e1.metric(
+        "Total Materiales",
+        f"${df_explosion.loc[df_explosion['Tipo'] == 'Material', 'Importe Total'].sum():,.2f}",
+    )
+    e2.metric(
+        "Total Equipo / Herramienta",
+        f"${df_explosion.loc[df_explosion['Tipo'] != 'Material', 'Importe Total'].sum():,.2f}",
+    )
+    e3.metric(
+        "Importe Insumos s/IVA",
+        f"${df_explosion['Importe Total'].sum():,.2f}",
+    )
+
+with tab4:
   st.subheader("Cotizaciones guardadas")
   df_hist = cargar_historial()
   if df_hist.empty:
