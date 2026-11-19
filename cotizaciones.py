@@ -163,13 +163,18 @@ def _defaults() -> dict:
       "cot_cargada": None,
       "partidas": [
           _nueva_partida_estado(
-              PARTIDA_DEFAULT_1, "Serv", 1.0, iniciar_en_cero=False
+              PARTIDA_DEFAULT_1,
+              "Serv",
+              1.0,
+              insumos_df=pd.DataFrame(columns=COLS_SEL),
+              iniciar_en_cero=True,
           ),
           _nueva_partida_estado(
               PARTIDA_DEFAULT_2,
               "Serv",
               1.0,
               factor_urg=1.0,
+              insumos_df=pd.DataFrame(columns=COLS_SEL),
               iniciar_en_cero=True,
           ),
       ],
@@ -1053,7 +1058,7 @@ def cb_agregar_partida(cat: pd.DataFrame):
       regimen=actual["regimen"],
       dividir=actual["dividir"],
       pct_ing_1=actual["pct_ing_1"],
-      insumos_df=base_desde_catalogo(cat, en_cero=True),
+      insumos_df=pd.DataFrame(columns=COLS_SEL),
       iniciar_en_cero=True,
   )
   ss["partidas"].append(nueva)
