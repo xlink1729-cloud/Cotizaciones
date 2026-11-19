@@ -4,9 +4,8 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import streamlit as st
 
-st.set_page_config(page_title="Cotizador PU - Neon", layout="wide")
+st.set_page_config(page_title="Cotizador PU ", layout="wide")
 st.title("⚡ Cotizador PU Técnico con Neon")
-
 
 def get_conn():
   return psycopg2.connect(st.secrets["DB"])
@@ -158,7 +157,7 @@ tab1, tab2, tab3 = st.tabs(
 )
 
 with tab1:
-  st.subheader("Catálogo persistente en Neon")
+  st.subheader("Catálogo")
   df_cat = cargar_catalogo()
   df_editado = st.data_editor(
       df_cat,
@@ -166,15 +165,15 @@ with tab1:
       column_config={"id": st.column_config.NumberColumn(disabled=True)},
       use_container_width=True,
   )
-  if st.button("💾 Guardar cambios en Neon"):
+  if st.button("💾 Guardar cambios"):
     guardar_catalogo(df_editado)
-    st.success("Catálogo actualizado en Neon.")
+    st.success("Catálogo actualizado.")
     st.rerun()
 
 with tab2:
   df_base = cargar_catalogo()
   if df_base.empty:
-    st.warning("Primero agrega insumos en la pestaña 'Catálogo Neon'.")
+    st.warning("Primero agrega insumos en la pestaña 'Catálogo'.")
   else:
     c_info1, c_info2, c_info3 = st.columns(3)
     folio_default = (
