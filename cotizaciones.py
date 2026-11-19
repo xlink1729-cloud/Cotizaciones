@@ -96,11 +96,13 @@ PARTIDA_DEFAULT_2 = (
     " pruebas finales"
 )
 
+
 def _siguiente_uid() -> int:
   ss = st.session_state
   val = int(ss.get("_uid_seq", 0)) + 1
   ss["_uid_seq"] = val
   return val
+
 
 def _mo_defaults(prefix: str) -> dict:
   d = {}
@@ -109,6 +111,7 @@ def _mo_defaults(prefix: str) -> dict:
       d[f"{prefix}_t_{e}_{i}"] = tarifa
       d[f"{prefix}_h_{e}_{i}"] = 4.0
   return d
+
 
 def _nueva_partida_estado(
     nombre: str = "Nueva partida",
@@ -153,6 +156,7 @@ def _nueva_partida_estado(
         p[k] = float(v)
   return p
 
+
 def _defaults() -> dict:
   return {
       "folio": "",
@@ -163,23 +167,19 @@ def _defaults() -> dict:
       "cot_cargada": None,
       "partidas": [
           _nueva_partida_estado(
-              PARTIDA_DEFAULT_1,
-              "Serv",
-              1.0,
-              insumos_df=pd.DataFrame(columns=COLS_SEL),
-              iniciar_en_cero=True,
+              PARTIDA_DEFAULT_1, "Serv", 1.0, iniciar_en_cero=False
           ),
           _nueva_partida_estado(
               PARTIDA_DEFAULT_2,
               "Serv",
               1.0,
               factor_urg=1.0,
-              insumos_df=pd.DataFrame(columns=COLS_SEL),
               iniciar_en_cero=True,
           ),
       ],
       "partida_activa": 0,
   }
+
 
 # ----------------------------------------------------------------------------
 # Seguridad: acceso con contraseña
@@ -187,6 +187,7 @@ def _defaults() -> dict:
 @st.cache_resource
 def _estado_login() -> dict:
   return {"fallos": 0, "bloqueado_hasta": 0.0}
+
 
 def verificar_acceso():
   ss = st.session_state
@@ -228,6 +229,7 @@ def verificar_acceso():
     st.error("Contraseña incorrecta.")
   st.stop()
 
+
 verificar_acceso()
 st.title("⚡ Cotizador PU · Multi-Partida & APU")
 with st.sidebar:
@@ -237,6 +239,7 @@ with st.sidebar:
 
 for _k, _v in _defaults().items():
   st.session_state.setdefault(_k, _v)
+
 
 # ----------------------------------------------------------------------------
 # Base de datos
@@ -257,6 +260,7 @@ def get_conn():
     raise
   finally:
     conn.close()
+
 
 MIGRACION_SQL = """
 CREATE TABLE IF NOT EXISTS catalogo_insumos (
@@ -357,6 +361,7 @@ CREATE INDEX IF NOT EXISTS idx_cotpart_folio ON cotizacion_partidas (folio, orde
 CREATE INDEX IF NOT EXISTS idx_cotins_folio ON cotizacion_insumos (folio);
 """
 
+
 @st.cache_resource(show_spinner=False)
 def init_db() -> bool:
   with get_conn() as conn:
@@ -364,17 +369,22 @@ def init_db() -> bool:
       cur.execute(MIGRACION_SQL)
   return True
 
+
 init_db()
+
 
 def _txt(v, default: str = "") -> str:
   return default if v is None or pd.isna(v) else str(v).strip()
 
+
 def _num(v, default: float) -> float:
   return default if v is None or pd.isna(v) else float(v)
+
 
 def _tipo(v) -> str:
   s = _txt(v, "Material")
   return s if s in TIPOS_INSUMO else "Material"
+
 
 # ---- Catálogo --------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False)
@@ -395,6 +405,7 @@ def cargar_catalogo() -> pd.DataFrame:
   df["cantidad_default"] = df["cantidad_default"].astype(float)
   df["con_factura"] = df["con_factura"].astype(bool)
   return df
+
 
 def guardar_catalogo(df: pd.DataFrame) -> list[str]:
   errores, filas = [], []
@@ -461,6 +472,7 @@ def guardar_catalogo(df: pd.DataFrame) -> list[str]:
           )
   cargar_catalogo.clear()
   return []
+
 
 # ---- Cálculo APU por partida y explosión de insumos ------------------------
 def calcular_partida(
@@ -532,6 +544,7 @@ def calcular_partida(
       "ganancia_sin_mo": ganancia - costo_mo_tot,
   }
 
+
 def construir_explosion(partidas_resumen: list[dict]) -> pd.DataFrame:
   """Consolida insumos de todas las partidas multiplicando por cantidad de partida."""
   filas = []
@@ -585,6 +598,7 @@ def construir_explosion(partidas_resumen: list[dict]) -> pd.DataFrame:
       ]
   ]
 
+
 # ---- Cotizaciones ----------------------------------------------------------
 def siguiente_folio(cur) -> str:
   anio = datetime.now(TZ).year
@@ -595,6 +609,7 @@ def siguiente_folio(cur) -> str:
       (anio,),
   )
   return f"COT-{anio}-{cur.fetchone()[0]:04d}"
+
 
 def guardar_cotizacion_multipartida(
     datos: dict,
@@ -724,6 +739,7 @@ def guardar_cotizacion_multipartida(
   cargar_historial.clear()
   return payload["folio"]
 
+
 @st.cache_data(ttl=60, show_spinner=False)
 def cargar_historial() -> pd.DataFrame:
   cols = [
@@ -752,6 +768,7 @@ def cargar_historial() -> pd.DataFrame:
     )
   return df
 
+
 def obtener_cotizacion_completa(folio: str):
   with get_conn() as conn:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -779,6 +796,7 @@ def obtener_cotizacion_completa(folio: str):
       )
       insumos = cur.fetchall()
   return cot, partidas, insumos
+
 
 # ----------------------------------------------------------------------------
 # Exportación Excel y PDF (Multi-Partida + Explosión)
@@ -1022,6 +1040,7 @@ def generar_pdf_cotizacion(
 
   return bytes(pdf.output())
 
+
 # ----------------------------------------------------------------------------
 # Utilidades de interfaz y callbacks
 # ----------------------------------------------------------------------------
@@ -1031,6 +1050,7 @@ def tabla(fn, *args, **kwargs):
   except (TypeError, st.errors.StreamlitAPIException):
     return fn(*args, use_container_width=True, **kwargs)
 
+
 def base_desde_catalogo(
     cat: pd.DataFrame, en_cero: bool = False
 ) -> pd.DataFrame:
@@ -1038,8 +1058,10 @@ def base_desde_catalogo(
   df["Cantidad"] = 0.0 if en_cero else df["cantidad_default"].fillna(0.0)
   return df[COLS_SEL].reset_index(drop=True)
 
+
 def _clamp(v, lo, hi):
   return int(max(lo, min(hi, round(float(v)))))
+
 
 def cb_agregar_partida(cat: pd.DataFrame):
   ss = st.session_state
@@ -1058,12 +1080,13 @@ def cb_agregar_partida(cat: pd.DataFrame):
       regimen=actual["regimen"],
       dividir=actual["dividir"],
       pct_ing_1=actual["pct_ing_1"],
-      insumos_df=pd.DataFrame(columns=COLS_SEL),
+      insumos_df=base_desde_catalogo(cat, en_cero=True),
       iniciar_en_cero=True,
   )
   ss["partidas"].append(nueva)
   ss["partida_activa"] = len(ss["partidas"]) - 1
   ss["ver"] += 1
+
 
 def cb_eliminar_partida():
   ss = st.session_state
@@ -1074,12 +1097,14 @@ def cb_eliminar_partida():
   ss["partida_activa"] = max(0, min(idx, len(ss["partidas"]) - 1))
   ss["ver"] += 1
 
+
 def cb_nueva():
   ss = st.session_state
   ver = ss["ver"] + 1
   for k, v in _defaults().items():
     ss[k] = v
   ss["ver"] = ver
+
 
 def cb_cargar(folio: str):
   ss = st.session_state
@@ -1214,6 +1239,7 @@ def cb_cargar(folio: str):
       "success",
       f"Cotización {folio} cargada con {len(partidas_cargadas)} partida(s).",
   )
+
 
 # ----------------------------------------------------------------------------
 # Interfaz
