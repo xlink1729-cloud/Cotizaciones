@@ -92,7 +92,7 @@ PARTIDA_DEFAULT_1 = (
     " polipasto/elevador"
 )
 PARTIDA_DEFAULT_2 = (
-    "Montaje definitivo de capacitor / banco capacitivo (74 µF / 150 µF) y"
+    "Montaje definitivo de capacitor / banco capacitivo (75 µF / 150 µF) y"
     " pruebas finales"
 )
 
