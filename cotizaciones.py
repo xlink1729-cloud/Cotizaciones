@@ -1045,6 +1045,8 @@ def cb_agregar_partida(cat: pd.DataFrame):
   ss = st.session_state
   idx_actual = min(ss["partida_activa"], len(ss["partidas"]) - 1)
   actual = ss["partidas"][idx_actual]
+  df_vacio = base_desde_catalogo(cat)
+  df_vacio["Cantidad"] = 0.0
   nueva = _nueva_partida_estado(
       nombre=f"Partida {len(ss['partidas']) + 1}",
       unidad="Serv",
@@ -1058,12 +1060,11 @@ def cb_agregar_partida(cat: pd.DataFrame):
       regimen=actual["regimen"],
       dividir=actual["dividir"],
       pct_ing_1=actual["pct_ing_1"],
-      insumos_df=base_desde_catalogo(cat),
+      insumos_df=df_vacio,
   )
   ss["partidas"].append(nueva)
   ss["partida_activa"] = len(ss["partidas"]) - 1
   ss["ver"] += 1
-
 
 def cb_eliminar_partida():
   ss = st.session_state
