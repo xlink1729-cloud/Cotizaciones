@@ -222,13 +222,69 @@ with tab2:
     col_mo, col_calc = st.columns(2)
     with col_mo:
       st.markdown("**Mano de obra**")
-      t_esp = st.number_input("Tarifa Especialista ($/hr)", value=300.0)
-      h_esp = st.number_input("Horas Especialista", value=4.0, step=0.5)
-      t_ayu = st.number_input("Tarifa Ayudante ($/hr)", value=180.0)
-      h_ayu = st.number_input("Horas Ayudante", value=4.0, step=0.5)
-      factor_urg = st.selectbox(
-          "Factor urgencia / prioridad", [1.0, 1.15, 1.25, 1.5, 2.0], index=2
+      t_esp = st.number_input(
+          "Tarifa Especialista ($/hr)",
+          value=300.0,
+          help=(
+              "Costo por hora del ingeniero/técnico especialista para"
+              " diagnóstico, pruebas y puesta en marcha."
+          ),
       )
+      h_esp = st.number_input(
+          "Horas Especialista",
+          value=4.0,
+          step=0.5,
+          help=(
+              "Horas estimadas del especialista (incluye trabajo en sitio y"
+              " ajustes/pruebas)."
+          ),
+      )
+      t_ayu = st.number_input(
+          "Tarifa Ayudante ($/hr)",
+          value=180.0,
+          help=(
+              "Costo por hora de apoyo técnico/ayudante para maniobras,"
+              " cableado o soporte en campo."
+          ),
+      )
+      h_ayu = st.number_input(
+          "Horas Ayudante",
+          value=4.0,
+          step=0.5,
+          help="Horas estimadas de apoyo del ayudante durante el servicio.",
+      )
+      factor_urg = st.selectbox(
+          "Factor urgencia / prioridad",
+          [1.0, 1.15, 1.25, 1.5, 2.0],
+          index=2,
+          help=(
+              "Multiplicador aplicado a la mano de obra por prioridad"
+              " operativa, urgencia del servicio o atención fuera de horario"
+              " habitual."
+          ),
+      )
+
+      ambos_ingenieros = st.checkbox(
+          "Ambos somos ingenieros (dividir ganancia neta entre los 2)",
+          value=True,
+          help=(
+              "Actívalo cuando el trabajo y/o resultado se reparte entre los"
+              " dos ingenieros sobre la ganancia libre real."
+          ),
+      )
+      pct_ing_1 = 50
+      if ambos_ingenieros:
+        pct_ing_1 = st.slider(
+            "Porcentaje de ganancia para Ing. 1 (%)",
+            0,
+            100,
+            50,
+            help=(
+                "Porcentaje de la ganancia libre real asignado al Ingeniero 1;"
+                " el resto (100% - este valor) va al Ingeniero 2."
+            ),
+        )
+      pct_ing_2 = 100 - pct_ing_1
 
       ambos_ingenieros = st.checkbox(
           "Ambos somos ingenieros (dividir ganancia neta entre los 2)",
