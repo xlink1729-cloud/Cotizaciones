@@ -5,7 +5,7 @@ from psycopg2.extras import RealDictCursor
 import streamlit as st
 
 st.set_page_config(page_title="Cotizador PU ", layout="wide")
-st.title("⚡ Cotizador PU Técnico con Neon")
+st.title("⚡ Cotizador PU")
 
 
 def get_conn():
@@ -222,37 +222,94 @@ with tab2:
     col_mo, col_calc = st.columns(2)
     with col_mo:
       st.markdown("**Mano de obra**")
-      t_esp = st.number_input(
-          "Tarifa Especialista ($/hr)",
-          value=300.0,
+      esquema_mo = st.selectbox(
+          "Esquema de mano de obra",
+          ["2 Ingenieros", "Especialista + Ayudante", "1 Ingeniero"],
           help=(
-              "Costo por hora del ingeniero/técnico especialista para"
-              " diagnóstico, pruebas y puesta en marcha."
+              "Elige quiénes participaron en el servicio para calcular el"
+              " costo directo de mano de obra."
           ),
       )
-      h_esp = st.number_input(
-          "Horas Especialista",
-          value=4.0,
-          step=0.5,
-          help=(
-              "Horas estimadas del especialista (incluye trabajo en sitio y"
-              " ajustes/pruebas)."
-          ),
-      )
-      t_ayu = st.number_input(
-          "Tarifa Ayudante ($/hr)",
-          value=180.0,
-          help=(
-              "Costo por hora de apoyo técnico/ayudante para maniobras,"
-              " cableado o soporte en campo."
-          ),
-      )
-      h_ayu = st.number_input(
-          "Horas Ayudante",
-          value=4.0,
-          step=0.5,
-          help="Horas estimadas de apoyo del ayudante durante el servicio.",
-      )
+
+      if esquema_mo == "2 Ingenieros":
+        t_ing1 = st.number_input(
+            "Tarifa Ing. 1 ($/hr)",
+            value=300.0,
+            help=(
+                "Costo por hora del primer ingeniero para diagnóstico,"
+                " pruebas y ejecución."
+            ),
+        )
+        h_ing1 = st.number_input(
+            "Horas Ing. 1",
+            value=4.0,
+            step=0.5,
+            help="Horas estimadas trabajadas por el primer ingeniero.",
+        )
+        t_ing2 = st.number_input(
+            "Tarifa Ing. 2 ($/hr)",
+            value=300.0,
+            help=(
+                "Costo por hora del segundo ingeniero para ejecución,"
+                " maniobras y pruebas."
+            ),
+        )
+        h_ing2 = st.number_input(
+            "Horas Ing. 2",
+            value=4.0,
+            step=0.5,
+            help="Horas estimadas trabajadas por el segundo ingeniero.",
+        )
+        costo_mo_base = (t_ing1 * h_ing1) + (t_ing2 * h_ing2)
+
+      elif esquema_mo == "Especialista + Ayudante":
+        t_esp = st.number_input(
+            "Tarifa Especialista ($/hr)",
+            value=300.0,
+            help=(
+                "Costo por hora del ingeniero/técnico especialista para"
+                " diagnóstico, pruebas y puesta en marcha."
+            ),
+        )
+        h_esp = st.number_input(
+            "Horas Especialista",
+            value=4.0,
+            step=0.5,
+            help=(
+                "Horas estimadas del especialista (incluye trabajo en sitio y"
+                " ajustes/pruebas)."
+            ),
+        )
+        t_ayu = st.number_input(
+            "Tarifa Ayudante ($/hr)",
+            value=180.0,
+            help=(
+                "Costo por hora de apoyo técnico/ayudante para maniobras,"
+                " cableado o soporte en campo."
+            ),
+        )
+        h_ayu = st.number_input(
+            "Horas Ayudante",
+            value=4.0,
+            step=0.5,
+            help="Horas estimadas de apoyo del ayudante durante el servicio.",
+        )
+        costo_mo_base = (t_esp * h_esp) + (t_ayu * h_ayu)
+
+      else:  # "1 Ingeniero"
+        t_ing1 = st.number_input(
+            "Tarifa Ingeniero ($/hr)",
+            value=300.0,
+            help="Costo por hora del ingeniero que ejecuta el servicio.",
+        )
+        h_ing1 = st.number_input(
+            "Horas Ingeniero",
+            value=4.0,
+            step=0.5,
+            help="Horas estimadas del servicio en sitio y pruebas.",
+        )
+        costo_mo_base = t_ing1 * h_ing1
+
       factor_urg = st.selectbox(
           "Factor urgencia / prioridad",
           [1.0, 1.15, 1.25, 1.5, 2.0],
@@ -283,17 +340,6 @@ with tab2:
                 "Porcentaje de la ganancia libre real asignado al Ingeniero 1;"
                 " el resto (100% - este valor) va al Ingeniero 2."
             ),
-        )
-      pct_ing_2 = 100 - pct_ing_1
-
-      ambos_ingenieros = st.checkbox(
-          "Ambos somos ingenieros (dividir ganancia neta entre los 2)",
-          value=True,
-      )
-      pct_ing_1 = 50
-      if ambos_ingenieros:
-        pct_ing_1 = st.slider(
-            "Porcentaje de ganancia para Ing. 1 (%)", 0, 100, 50
         )
       pct_ing_2 = 100 - pct_ing_1
 
@@ -366,7 +412,7 @@ with tab2:
     con_fac_importe = seleccion[seleccion["con_factura"]]["Importe"].sum()
     sin_fac_importe = seleccion[~seleccion["con_factura"]]["Importe"].sum()
     iva_acreditable = con_fac_importe * 0.16
-    costo_mo = ((t_esp * h_esp) + (t_ayu * h_ayu)) * factor_urg
+    costo_mo = costo_mo_base * factor_urg
     herr_menor = costo_mo * 0.03
 
     cd = costo_mat + costo_mo + herr_menor
