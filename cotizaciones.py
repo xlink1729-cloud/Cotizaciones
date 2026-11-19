@@ -227,7 +227,7 @@ with tab2:
       t_ayu = st.number_input("Tarifa Ayudante ($/hr)", value=180.0)
       h_ayu = st.number_input("Horas Ayudante", value=4.0, step=0.5)
       factor_urg = st.selectbox(
-          "Factor urgencia / fin de semana", [1.0, 1.25, 1.5, 2.0], index=2
+          "Factor urgencia / prioridad", [1.0, 1.15, 1.25, 1.5, 2.0], index=2
       )
 
       ambos_ingenieros = st.checkbox(
@@ -241,59 +241,61 @@ with tab2:
         )
       pct_ing_2 = 100 - pct_ing_1
 
-with col_calc:
-  st.markdown("**Indirectos, margen y SAT**")
-  pct_ind = (
-      st.slider(
-          "Indirectos (%)",
-          0,
-          30,
-          12,
+    with col_calc:
+      st.markdown("**Indirectos, margen y SAT**")
+      pct_ind = (
+          st.slider(
+              "Indirectos (%)",
+              0,
+              30,
+              12,
+              help=(
+                  "Gastos operativos generales del trabajo (búsqueda de"
+                  " refacciones, gestión, desgaste de equipo) aplicados sobre el"
+                  " Costo Directo."
+              ),
+          )
+          / 100
+      )
+
+      pct_gar = (
+          st.slider(
+              "Garantía / contingencia (%)",
+              0,
+              15,
+              5,
+              help=(
+                  "Colchón preventivo por revisiones posteriores, ajustes o"
+                  " imprevistos menores, calculado sobre Costo Directo +"
+                  " Indirectos."
+              ),
+          )
+          / 100
+      )
+
+      pct_uti = (
+          st.slider(
+              "Utilidad (%)",
+              5,
+              60,
+              25,
+              help=(
+                  "Margen de ganancia antes de impuestos y desembolsos de"
+                  " compra, aplicado sobre Costo Directo + Indirectos +"
+                  " Garantía."
+              ),
+          )
+          / 100
+      )
+
+      regimen = st.radio(
+          "Régimen",
+          ["RESICO (1% ISR)", "Actividad Empresarial (~20% s/util)"],
           help=(
-              "Gastos operativos generales del trabajo (búsqueda de refacciones,"
-              " gestión, desgaste de equipo) aplicados sobre el Costo Directo."
+              "Estimación orientativa de ISR para calcular la ganancia libre"
+              " aproximada; confírmala con tu contador según tu alta final."
           ),
       )
-      / 100
-  )
-
-  pct_gar = (
-      st.slider(
-          "Garantía / contingencia (%)",
-          0,
-          15,
-          5,
-          help=(
-              "Colchón preventivo por revisiones posteriores, ajustes o"
-              " imprevistos menores, calculado sobre Costo Directo +"
-              " Indirectos."
-          ),
-      )
-      / 100
-  )
-
-  pct_uti = (
-      st.slider(
-          "Utilidad (%)",
-          5,
-          60,
-          25,
-          help=(
-              "Margen de ganancia antes de impuestos y desembolsos de compra,"
-              " aplicado sobre Costo Directo + Indirectos + Garantía."
-          ),
-      )
-      / 100
-  )
-
-  regimen = st.radio(
-      "Régimen",
-      ["RESICO (1% ISR)", "Actividad Empresarial (~20% s/util)"],
-      help=(
-          "Estimación orientativa de ISR para calcular la ganancia libre"
-          " aproximada; confírmala con tu contador según tu alta final."
-      ),
-  )
 
     desc = st.text_area(
         "Concepto para cotización / factura",
