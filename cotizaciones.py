@@ -1711,6 +1711,21 @@ with tab2:
       f" tu MO como sueldo: **${tot_gan_sin_mo:,.2f}**."
   )
 
+  # Reparto de ganancia libre por partida activa y acumulado total
+  tot_p1_acum = 0.0
+  tot_p2_acum = 0.0
+  tiene_reparto_global = False
+  for x in partidas_resumen:
+    pp_x = x["parametros_partida"]
+    esq_x = pp_x.get("esquema", NOMBRES_ESQUEMA[0])
+    pers_x = ESQUEMAS.get(esq_x, [])
+    if pp_x.get("dividir") and len(pers_x) == 2:
+      tiene_reparto_global = True
+      pct1_x = int(pp_x.get("pct_ing_1", 50))
+      gan_x = float(x["res"]["ganancia"])
+      tot_p1_acum += max(0.0, gan_x * pct1_x / 100.0)
+      tot_p2_acum += max(0.0, gan_x * (100 - pct1_x) / 100.0)
+
   if p_cur["dividir"] and len(personas_p) == 2:
     p1_val = max(0.0, res_act["ganancia"] * int(p_cur["pct_ing_1"]) / 100.0)
     p2_val = max(
@@ -1724,6 +1739,15 @@ with tab2:
     r2.info(
         f"{personas_p[1][0]} ({100 - int(p_cur['pct_ing_1'])}%) en Partida"
         f" {ss['partida_activa'] + 1}: **${p2_val:,.2f} MXN**"
+    )
+
+  if tiene_reparto_global and len(partidas_resumen) > 1:
+    g1, g2 = st.columns(2)
+    g1.caption(
+        f"Acumulado repartido Persona 1 (todas las partidas): **${tot_p1_acum:,.2f} MXN**"
+    )
+    g2.caption(
+        f"Acumulado repartido Persona 2 (todas las partidas): **${tot_p2_acum:,.2f} MXN**"
     )
 
   st.checkbox("Actualizar si el folio ya existe", key="sobrescribir")
