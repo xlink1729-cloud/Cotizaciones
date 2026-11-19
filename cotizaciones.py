@@ -96,6 +96,11 @@ PARTIDA_DEFAULT_2 = (
     " pruebas finales"
 )
 
+def _siguiente_uid() -> int:
+  ss = st.session_state
+  val = int(ss.get("_uid_seq", 0)) + 1
+  ss["_uid_seq"] = val
+  return val
 
 def _mo_defaults(prefix: str) -> dict:
   d = {}
@@ -104,7 +109,6 @@ def _mo_defaults(prefix: str) -> dict:
       d[f"{prefix}_t_{e}_{i}"] = tarifa
       d[f"{prefix}_h_{e}_{i}"] = 4.0
   return d
-
 
 def _nueva_partida_estado(
     nombre: str = "Nueva partida",
@@ -121,10 +125,12 @@ def _nueva_partida_estado(
     pct_ing_1: int = 50,
     insumos_df: pd.DataFrame | None = None,
     tarifas_horas: dict | None = None,
+    iniciar_en_cero: bool = False,
 ) -> dict:
   esq = esquema if esquema in ESQUEMAS else NOMBRES_ESQUEMA[0]
   reg = regimen if regimen in REGIMENES else REGIMENES[0]
   p = {
+      "uid": _siguiente_uid(),
       "nombre": nombre,
       "unidad": unidad,
       "cantidad": float(cantidad),
@@ -138,6 +144,7 @@ def _nueva_partida_estado(
       "dividir": bool(dividir),
       "pct_ing_1": int(pct_ing_1),
       "insumos_df": insumos_df.copy() if insumos_df is not None else None,
+      "iniciar_en_cero": bool(iniciar_en_cero),
   }
   p.update(_mo_defaults("mo"))
   if tarifas_horas:
@@ -145,7 +152,6 @@ def _nueva_partida_estado(
       if k in p:
         p[k] = float(v)
   return p
-
 
 def _defaults() -> dict:
   return {
@@ -156,14 +162,19 @@ def _defaults() -> dict:
       "ver": 0,
       "cot_cargada": None,
       "partidas": [
-          _nueva_partida_estado(PARTIDA_DEFAULT_1, "Serv", 1.0),
           _nueva_partida_estado(
-              PARTIDA_DEFAULT_2, "Serv", 1.0, factor_urg=1.0
+              PARTIDA_DEFAULT_1, "Serv", 1.0, iniciar_en_cero=False
+          ),
+          _nueva_partida_estado(
+              PARTIDA_DEFAULT_2,
+              "Serv",
+              1.0,
+              factor_urg=1.0,
+              iniciar_en_cero=True,
           ),
       ],
       "partida_activa": 0,
   }
-
 
 # ----------------------------------------------------------------------------
 # Seguridad: acceso con contraseña
@@ -171,7 +182,6 @@ def _defaults() -> dict:
 @st.cache_resource
 def _estado_login() -> dict:
   return {"fallos": 0, "bloqueado_hasta": 0.0}
-
 
 def verificar_acceso():
   ss = st.session_state
@@ -213,7 +223,6 @@ def verificar_acceso():
     st.error("Contraseña incorrecta.")
   st.stop()
 
-
 verificar_acceso()
 st.title("⚡ Cotizador PU · Multi-Partida & APU")
 with st.sidebar:
@@ -223,7 +232,6 @@ with st.sidebar:
 
 for _k, _v in _defaults().items():
   st.session_state.setdefault(_k, _v)
-
 
 # ----------------------------------------------------------------------------
 # Base de datos
@@ -244,7 +252,6 @@ def get_conn():
     raise
   finally:
     conn.close()
-
 
 MIGRACION_SQL = """
 CREATE TABLE IF NOT EXISTS catalogo_insumos (
@@ -345,7 +352,6 @@ CREATE INDEX IF NOT EXISTS idx_cotpart_folio ON cotizacion_partidas (folio, orde
 CREATE INDEX IF NOT EXISTS idx_cotins_folio ON cotizacion_insumos (folio);
 """
 
-
 @st.cache_resource(show_spinner=False)
 def init_db() -> bool:
   with get_conn() as conn:
@@ -353,22 +359,17 @@ def init_db() -> bool:
       cur.execute(MIGRACION_SQL)
   return True
 
-
 init_db()
-
 
 def _txt(v, default: str = "") -> str:
   return default if v is None or pd.isna(v) else str(v).strip()
 
-
 def _num(v, default: float) -> float:
   return default if v is None or pd.isna(v) else float(v)
-
 
 def _tipo(v) -> str:
   s = _txt(v, "Material")
   return s if s in TIPOS_INSUMO else "Material"
-
 
 # ---- Catálogo --------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False)
@@ -389,7 +390,6 @@ def cargar_catalogo() -> pd.DataFrame:
   df["cantidad_default"] = df["cantidad_default"].astype(float)
   df["con_factura"] = df["con_factura"].astype(bool)
   return df
-
 
 def guardar_catalogo(df: pd.DataFrame) -> list[str]:
   errores, filas = [], []
@@ -457,7 +457,6 @@ def guardar_catalogo(df: pd.DataFrame) -> list[str]:
   cargar_catalogo.clear()
   return []
 
-
 # ---- Cálculo APU por partida y explosión de insumos ------------------------
 def calcular_partida(
     df_sel: pd.DataFrame,
@@ -501,7 +500,11 @@ def calcular_partida(
   costo_mo_tot = costo_mo_unit * cant_p
 
   iva_pagar = max(0.0, iva_tras - iva_acred_tot)
-  isr = subtotal * ISR_RESICO if "RESICO" in regimen else max(0.0, uti * ISR_ACT_EMP)
+  isr = (
+      subtotal * ISR_RESICO
+      if "RESICO" in regimen
+      else max(0.0, uti * ISR_ACT_EMP)
+  )
   desembolso = con_fac_tot * (1 + IVA) + sin_fac_tot
   ganancia = total - desembolso - iva_pagar - isr
 
@@ -523,7 +526,6 @@ def calcular_partida(
       "ganancia": ganancia,
       "ganancia_sin_mo": ganancia - costo_mo_tot,
   }
-
 
 def construir_explosion(partidas_resumen: list[dict]) -> pd.DataFrame:
   """Consolida insumos de todas las partidas multiplicando por cantidad de partida."""
@@ -578,7 +580,6 @@ def construir_explosion(partidas_resumen: list[dict]) -> pd.DataFrame:
       ]
   ]
 
-
 # ---- Cotizaciones ----------------------------------------------------------
 def siguiente_folio(cur) -> str:
   anio = datetime.now(TZ).year
@@ -589,7 +590,6 @@ def siguiente_folio(cur) -> str:
       (anio,),
   )
   return f"COT-{anio}-{cur.fetchone()[0]:04d}"
-
 
 def guardar_cotizacion_multipartida(
     datos: dict,
@@ -719,7 +719,6 @@ def guardar_cotizacion_multipartida(
   cargar_historial.clear()
   return payload["folio"]
 
-
 @st.cache_data(ttl=60, show_spinner=False)
 def cargar_historial() -> pd.DataFrame:
   cols = [
@@ -748,7 +747,6 @@ def cargar_historial() -> pd.DataFrame:
     )
   return df
 
-
 def obtener_cotizacion_completa(folio: str):
   with get_conn() as conn:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -776,7 +774,6 @@ def obtener_cotizacion_completa(folio: str):
       )
       insumos = cur.fetchall()
   return cot, partidas, insumos
-
 
 # ----------------------------------------------------------------------------
 # Exportación Excel y PDF (Multi-Partida + Explosión)
@@ -1020,7 +1017,6 @@ def generar_pdf_cotizacion(
 
   return bytes(pdf.output())
 
-
 # ----------------------------------------------------------------------------
 # Utilidades de interfaz y callbacks
 # ----------------------------------------------------------------------------
@@ -1030,23 +1026,20 @@ def tabla(fn, *args, **kwargs):
   except (TypeError, st.errors.StreamlitAPIException):
     return fn(*args, use_container_width=True, **kwargs)
 
-
-def base_desde_catalogo(cat: pd.DataFrame) -> pd.DataFrame:
+def base_desde_catalogo(
+    cat: pd.DataFrame, en_cero: bool = False
+) -> pd.DataFrame:
   df = cat.rename(columns={"concepto": "Concepto"}).copy()
-  df["Cantidad"] = df["cantidad_default"].fillna(0.0)
+  df["Cantidad"] = 0.0 if en_cero else df["cantidad_default"].fillna(0.0)
   return df[COLS_SEL].reset_index(drop=True)
-
 
 def _clamp(v, lo, hi):
   return int(max(lo, min(hi, round(float(v)))))
-
 
 def cb_agregar_partida(cat: pd.DataFrame):
   ss = st.session_state
   idx_actual = min(ss["partida_activa"], len(ss["partidas"]) - 1)
   actual = ss["partidas"][idx_actual]
-  df_vacio = base_desde_catalogo(cat)
-  df_vacio["Cantidad"] = 0.0
   nueva = _nueva_partida_estado(
       nombre=f"Partida {len(ss['partidas']) + 1}",
       unidad="Serv",
@@ -1060,7 +1053,8 @@ def cb_agregar_partida(cat: pd.DataFrame):
       regimen=actual["regimen"],
       dividir=actual["dividir"],
       pct_ing_1=actual["pct_ing_1"],
-      insumos_df=df_vacio,
+      insumos_df=base_desde_catalogo(cat, en_cero=True),
+      iniciar_en_cero=True,
   )
   ss["partidas"].append(nueva)
   ss["partida_activa"] = len(ss["partidas"]) - 1
@@ -1075,14 +1069,12 @@ def cb_eliminar_partida():
   ss["partida_activa"] = max(0, min(idx, len(ss["partidas"]) - 1))
   ss["ver"] += 1
 
-
 def cb_nueva():
   ss = st.session_state
   ver = ss["ver"] + 1
   for k, v in _defaults().items():
     ss[k] = v
   ss["ver"] = ver
-
 
 def cb_cargar(folio: str):
   ss = st.session_state
@@ -1218,7 +1210,6 @@ def cb_cargar(folio: str):
       f"Cotización {folio} cargada con {len(partidas_cargadas)} partida(s).",
   )
 
-
 # ----------------------------------------------------------------------------
 # Interfaz
 # ----------------------------------------------------------------------------
@@ -1276,11 +1267,12 @@ cat_actual = cargar_catalogo()
 partidas_resumen = []
 
 for idx_p, p_state in enumerate(ss["partidas"]):
-  base_p = (
-      p_state["insumos_df"].copy()
-      if p_state["insumos_df"] is not None
-      else base_desde_catalogo(cat_actual)
-  )
+  p_state.setdefault("uid", _siguiente_uid())
+  if p_state["insumos_df"] is None:
+    p_state["insumos_df"] = base_desde_catalogo(
+        cat_actual, en_cero=bool(p_state.get("iniciar_en_cero", False))
+    )
+  base_p = p_state["insumos_df"].copy()
   base_p["Cantidad"] = base_p["Cantidad"].fillna(0.0).astype(float)
   base_p["tipo_insumo"] = base_p["tipo_insumo"].apply(_tipo)
   base_p["costo_sin_iva"] = base_p["costo_sin_iva"].astype(float)
@@ -1356,13 +1348,23 @@ with tab2:
   ):
     st.warning("Primero agrega insumos en la pestaña «1. Catálogo».")
   else:
+    top_a, top_b = st.columns([4, 1])
     if ss["cot_cargada"]:
-      c_a, c_b = st.columns([4, 1])
-      c_a.info(
+      top_a.info(
           f"Editando **{ss['cot_cargada']}**. Marca «Actualizar si el folio ya"
           " existe» para sobrescribir o borra el folio para crear uno nuevo."
       )
-      c_b.button("➕ Nueva cotización", on_click=cb_nueva)
+    else:
+      top_a.caption(
+          "Captura los datos generales y edita el Análisis de Precio Unitario"
+          " (APU) de cada partida."
+      )
+    top_b.button(
+        "➕ Nueva cotización",
+        on_click=cb_nueva,
+        use_container_width=True,
+        help="Limpia el formulario y reinicia las partidas para crear una cotización desde cero.",
+    )
 
     c1, c2, c3 = st.columns(3)
     c1.text_input(
@@ -1370,6 +1372,7 @@ with tab2:
         key="folio",
         max_chars=30,
         placeholder="Automático al guardar (COT-AAAA-0001)",
+        help="Déjalo vacío para que se asigne el siguiente folio consecutivo.",
     )
     c2.text_input("Cliente", key="cliente", max_chars=150)
     c3.text_input("Ubicación", key="ubicacion", max_chars=120)
@@ -1415,27 +1418,30 @@ with tab2:
         on_click=cb_agregar_partida,
         args=(cat_actual,),
         use_container_width=True,
+        help="Agrega una nueva partida limpia (con insumos en 0.00) al presupuesto.",
     )
     pa3.button(
         "🗑️ Quitar partida",
         on_click=cb_eliminar_partida,
         disabled=len(ss["partidas"]) <= 1,
         use_container_width=True,
+        help="Elimina la partida seleccionada actualmente.",
     )
 
     p_cur = ss["partidas"][ss["partida_activa"]]
+    uid = p_cur["uid"]
     st.markdown(f"#### APU — Partida {ss['partida_activa'] + 1}")
     pn1, pn2, pn3 = st.columns([4, 1, 1])
     p_cur["nombre"] = pn1.text_input(
         "Concepto de la partida",
         value=p_cur["nombre"],
-        key=f"p_nom_{ss['partida_activa']}_{ss['ver']}",
+        key=f"p_nom_{uid}_{ss['ver']}",
     )
     p_cur["unidad"] = pn2.text_input(
         "Unidad",
         value=p_cur["unidad"],
         max_chars=20,
-        key=f"p_uni_{ss['partida_activa']}_{ss['ver']}",
+        key=f"p_uni_{uid}_{ss['ver']}",
     )
     p_cur["cantidad"] = pn3.number_input(
         "Cantidad de partida",
@@ -1443,14 +1449,12 @@ with tab2:
         step=0.5,
         value=float(p_cur["cantidad"]),
         format="%.2f",
-        key=f"p_cant_{ss['partida_activa']}_{ss['ver']}",
+        key=f"p_cant_{uid}_{ss['ver']}",
     )
 
     df_edit_p = tabla(
         st.data_editor,
-        p_cur["insumos_df"]
-        if p_cur["insumos_df"] is not None
-        else base_desde_catalogo(cat_actual),
+        p_cur["insumos_df"],
         column_config={
             "tipo_insumo": st.column_config.TextColumn("Tipo"),
             "unidad": "Unidad",
@@ -1469,7 +1473,7 @@ with tab2:
             "costo_sin_iva",
             "con_factura",
         ],
-        key=f"apu_ins_{ss['partida_activa']}_{ss['ver']}",
+        key=f"apu_ins_{uid}_{ss['ver']}",
     ).copy()
     df_edit_p["Cantidad"] = df_edit_p["Cantidad"].fillna(0.0).astype(float)
     df_edit_p["Importe"] = df_edit_p["costo_sin_iva"] * df_edit_p["Cantidad"]
@@ -1482,7 +1486,8 @@ with tab2:
           "Esquema de mano de obra",
           NOMBRES_ESQUEMA,
           index=NOMBRES_ESQUEMA.index(p_cur["esquema"]),
-          key=f"p_esq_{ss['partida_activa']}_{ss['ver']}",
+          help="Elige quiénes participan en esta partida para calcular su mano de obra directa.",
+          key=f"p_esq_{uid}_{ss['ver']}",
       )
       p_cur["esquema"] = esq_sel
       e_idx_p = NOMBRES_ESQUEMA.index(esq_sel)
@@ -1497,14 +1502,15 @@ with tab2:
             step=10.0,
             value=float(p_cur.get(t_key, 300.0)),
             help=ayuda_per,
-            key=f"ui_{t_key}_{ss['partida_activa']}_{ss['ver']}",
+            key=f"ui_{t_key}_{uid}_{ss['ver']}",
         )
         h_val = st.number_input(
             f"Horas {nombre_per}",
             min_value=0.0,
             step=0.5,
             value=float(p_cur.get(h_key, 4.0)),
-            key=f"ui_{h_key}_{ss['partida_activa']}_{ss['ver']}",
+            help=f"Horas estimadas de {nombre_per} para esta partida.",
+            key=f"ui_{h_key}_{uid}_{ss['ver']}",
         )
         p_cur[t_key] = float(t_val)
         p_cur[h_key] = float(h_val)
@@ -1516,7 +1522,8 @@ with tab2:
           "Factor urgencia / prioridad",
           ops_urg,
           index=ops_urg.index(float(p_cur["factor_urg"])),
-          key=f"p_urg_{ss['partida_activa']}_{ss['ver']}",
+          help="Multiplicador sobre la mano de obra por urgencia o atención fuera de horario.",
+          key=f"p_urg_{uid}_{ss['ver']}",
       )
 
       div_p = False
@@ -1526,7 +1533,8 @@ with tab2:
         div_p = st.checkbox(
             f"Dividir ganancia libre de la partida entre {n1} y {n2}",
             value=bool(p_cur["dividir"]),
-            key=f"p_div_{ss['partida_activa']}_{ss['ver']}",
+            help="Reparte la ganancia libre real de esta partida entre los dos participantes.",
+            key=f"p_div_{uid}_{ss['ver']}",
         )
         p_cur["dividir"] = div_p
         if div_p:
@@ -1535,55 +1543,56 @@ with tab2:
               0,
               100,
               value=_clamp(p_cur["pct_ing_1"], 0, 100),
-              key=f"p_pct1_{ss['partida_activa']}_{ss['ver']}",
+              help=f"El resto va a {n2}.",
+              key=f"p_pct1_{uid}_{ss['ver']}",
           )
           p_cur["pct_ing_1"] = int(pct1_p)
 
     with col_calc:
-        st.markdown("**Indirectos, margen y SAT de la partida**")
-        p_cur["pct_herr"] = st.slider(
-            "Herramienta menor (% de MO)",
-            0,
-            10,
-            value=_clamp(p_cur["pct_herr"], 0, 10),
-            help="Desgaste de herramienta menor, calculado sobre la mano de obra.",
-            key=f"p_herr_{ss['partida_activa']}_{ss['ver']}",
-        )
-        p_cur["pct_ind"] = st.slider(
-            "Indirectos (%)",
-            0,
-            30,
-            value=_clamp(p_cur["pct_ind"], 0, 30),
-            help="Gastos operativos generales, aplicados sobre el Costo Directo.",
-            key=f"p_ind_{ss['partida_activa']}_{ss['ver']}",
-        )
-        p_cur["pct_gar"] = st.slider(
-            "Garantía / contingencia (%)",
-            0,
-            15,
-            value=_clamp(p_cur["pct_gar"], 0, 15),
-            help="Colchón por revisiones o imprevistos, sobre Costo Directo + Indirectos.",
-            key=f"p_gar_{ss['partida_activa']}_{ss['ver']}",
-        )
-        p_cur["pct_uti"] = st.slider(
-            "Utilidad (%)",
-            5,
-            60,
-            value=_clamp(p_cur["pct_uti"], 5, 60),
-            help=(
-                "Se aplica sobre Costo Directo + Indirectos + Garantía (markup, no margen):"
-                " 25% de utilidad equivale a ~20% de margen sobre el precio de venta."
-            ),
-            key=f"p_uti_{ss['partida_activa']}_{ss['ver']}",
-        )
-        p_cur["regimen"] = st.radio(
-            "Régimen",
-             REGIMENES,
-             index=REGIMENES.index(p_cur["regimen"]),
-             help="Estimación orientativa de ISR; confírmala con tu contador (retenciones a personas morales, etc.).",
-             key=f"p_reg_{ss['partida_activa']}_{ss['ver']}",
-        )
-        
+      st.markdown("**Indirectos, margen y SAT de la partida**")
+      p_cur["pct_herr"] = st.slider(
+          "Herramienta menor (% de MO)",
+          0,
+          10,
+          value=_clamp(p_cur["pct_herr"], 0, 10),
+          help="Desgaste de herramienta menor, calculado sobre la mano de obra.",
+          key=f"p_herr_{uid}_{ss['ver']}",
+      )
+      p_cur["pct_ind"] = st.slider(
+          "Indirectos (%)",
+          0,
+          30,
+          value=_clamp(p_cur["pct_ind"], 0, 30),
+          help="Gastos operativos generales, aplicados sobre el Costo Directo.",
+          key=f"p_ind_{uid}_{ss['ver']}",
+      )
+      p_cur["pct_gar"] = st.slider(
+          "Garantía / contingencia (%)",
+          0,
+          15,
+          value=_clamp(p_cur["pct_gar"], 0, 15),
+          help="Colchón por revisiones o imprevistos, sobre Costo Directo + Indirectos.",
+          key=f"p_gar_{uid}_{ss['ver']}",
+      )
+      p_cur["pct_uti"] = st.slider(
+          "Utilidad (%)",
+          5,
+          60,
+          value=_clamp(p_cur["pct_uti"], 5, 60),
+          help=(
+              "Se aplica sobre Costo Directo + Indirectos + Garantía (markup, no margen):"
+              " 25% de utilidad equivale a ~20% de margen sobre el precio de venta."
+          ),
+          key=f"p_uti_{uid}_{ss['ver']}",
+      )
+      p_cur["regimen"] = st.radio(
+          "Régimen",
+          REGIMENES,
+          index=REGIMENES.index(p_cur["regimen"]),
+          help="Estimación orientativa de ISR; confírmala con tu contador (retenciones a personas morales, etc.).",
+          key=f"p_reg_{uid}_{ss['ver']}",
+      )
+
     # Recalcular partida activa con los valores recién editados
     res_act = calcular_partida(
         df_sel=df_edit_p,
