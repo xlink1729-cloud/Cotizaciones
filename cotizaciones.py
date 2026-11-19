@@ -241,14 +241,59 @@ with tab2:
         )
       pct_ing_2 = 100 - pct_ing_1
 
-    with col_calc:
-      st.markdown("**Indirectos, margen y SAT**")
-      pct_ind = st.slider("Indirectos (%)", 0, 30, 12) / 100
-      pct_gar = st.slider("Garantía / contingencia (%)", 0, 15, 5) / 100
-      pct_uti = st.slider("Utilidad (%)", 5, 60, 25) / 100
-      regimen = st.radio(
-          "Régimen", ["RESICO (1% ISR)", "Actividad Empresarial (~20% s/util)"]
+with col_calc:
+  st.markdown("**Indirectos, margen y SAT**")
+  pct_ind = (
+      st.slider(
+          "Indirectos (%)",
+          0,
+          30,
+          12,
+          help=(
+              "Gastos operativos generales del trabajo (búsqueda de refacciones,"
+              " gestión, desgaste de equipo) aplicados sobre el Costo Directo."
+          ),
       )
+      / 100
+  )
+
+  pct_gar = (
+      st.slider(
+          "Garantía / contingencia (%)",
+          0,
+          15,
+          5,
+          help=(
+              "Colchón preventivo por revisiones posteriores, ajustes o"
+              " imprevistos menores, calculado sobre Costo Directo +"
+              " Indirectos."
+          ),
+      )
+      / 100
+  )
+
+  pct_uti = (
+      st.slider(
+          "Utilidad (%)",
+          5,
+          60,
+          25,
+          help=(
+              "Margen de ganancia antes de impuestos y desembolsos de compra,"
+              " aplicado sobre Costo Directo + Indirectos + Garantía."
+          ),
+      )
+      / 100
+  )
+
+  regimen = st.radio(
+      "Régimen",
+      ["RESICO (1% ISR)", "Actividad Empresarial (~20% s/util)"],
+      help=(
+          "Estimación orientativa de ISR para calcular la ganancia libre"
+          " aproximada; confírmala con tu contador según tu alta final."
+      ),
+  )
 
     desc = st.text_area(
         "Concepto para cotización / factura",
