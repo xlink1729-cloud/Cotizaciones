@@ -9,7 +9,7 @@ st.title("⚡ Cotizador PU Técnico con Neon")
 
 
 def get_conn():
-  return psycopg2.connect(st.secrets["connections"]["neon"]["url"])
+  return psycopg2.connect(st.secrets["DB"])
 
 
 def init_db():
