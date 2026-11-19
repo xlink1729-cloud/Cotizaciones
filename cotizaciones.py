@@ -26,6 +26,7 @@ ISR_ACT_EMP = 0.20
 MAX_FALLOS_LOGIN = 5
 BLOQUEO_SEG = 300
 
+TIPOS_INSUMO = ["Material", "Equipo / Herramienta"]
 FACTORES_URGENCIA = [1.0, 1.15, 1.25, 1.5, 2.0]
 REGIMENES = ["RESICO (1% ISR)", "Actividad Empresarial (~20% s/util)"]
 
@@ -72,12 +73,20 @@ NOMBRES_ESQUEMA = list(ESQUEMAS)
 COLS_CAT = [
     "id",
     "concepto",
+    "tipo_insumo",
     "unidad",
     "costo_sin_iva",
     "cantidad_default",
     "con_factura",
 ]
-COLS_SEL = ["Concepto", "unidad", "costo_sin_iva", "con_factura", "Cantidad"]
+COLS_SEL = [
+    "Concepto",
+    "tipo_insumo",
+    "unidad",
+    "costo_sin_iva",
+    "con_factura",
+    "Cantidad",
+]
 
 DESC_DEFAULT = (
     "Servicio de mantenimiento correctivo en polipasto monofásico: diagnóstico,"
@@ -102,8 +111,8 @@ def _defaults() -> dict:
       "pct_uti": 25,
       "regimen": REGIMENES[0],
       "sobrescribir": False,
-      "base_df": None,  # None = usar catálogo; DataFrame = cotización cargada
-      "ver": 0,  # cambia para reiniciar el editor de insumos
+      "base_df": None,
+      "ver": 0,
       "cot_cargada": None,
   }
   for e, nombre in enumerate(NOMBRES_ESQUEMA):
@@ -199,6 +208,7 @@ MIGRACION_SQL = """
 CREATE TABLE IF NOT EXISTS catalogo_insumos (
     id SERIAL PRIMARY KEY,
     concepto VARCHAR(150) NOT NULL,
+    tipo_insumo VARCHAR(30) NOT NULL DEFAULT 'Material',
     unidad VARCHAR(20) NOT NULL DEFAULT 'Pza',
     costo_sin_iva NUMERIC(12, 2) NOT NULL DEFAULT 0,
     cantidad_default NUMERIC(10, 2) NOT NULL DEFAULT 1.00,
@@ -207,6 +217,8 @@ CREATE TABLE IF NOT EXISTS catalogo_insumos (
 );
 ALTER TABLE catalogo_insumos
     ADD COLUMN IF NOT EXISTS cantidad_default NUMERIC(10, 2) NOT NULL DEFAULT 1.00;
+ALTER TABLE catalogo_insumos
+    ADD COLUMN IF NOT EXISTS tipo_insumo VARCHAR(30) NOT NULL DEFAULT 'Material';
 
 CREATE TABLE IF NOT EXISTS cotizaciones (
     folio VARCHAR(30) PRIMARY KEY,
@@ -231,12 +243,15 @@ CREATE TABLE IF NOT EXISTS cotizacion_insumos (
     id SERIAL PRIMARY KEY,
     folio VARCHAR(30) REFERENCES cotizaciones(folio) ON DELETE CASCADE,
     concepto VARCHAR(150) NOT NULL,
+    tipo_insumo VARCHAR(30) NOT NULL DEFAULT 'Material',
     cantidad NUMERIC(10, 2) NOT NULL,
     costo_unitario_sin_iva NUMERIC(12, 2) NOT NULL,
     importe NUMERIC(12, 2) NOT NULL
 );
 
 ALTER TABLE cotizaciones ADD COLUMN IF NOT EXISTS parametros JSONB;
+ALTER TABLE cotizacion_insumos
+    ADD COLUMN IF NOT EXISTS tipo_insumo VARCHAR(30) NOT NULL DEFAULT 'Material';
 ALTER TABLE cotizacion_insumos
     ADD COLUMN IF NOT EXISTS unidad VARCHAR(20) NOT NULL DEFAULT 'Pza';
 ALTER TABLE cotizacion_insumos
@@ -288,19 +303,26 @@ def _num(v, default: float) -> float:
   return default if v is None or pd.isna(v) else float(v)
 
 
+def _tipo(v) -> str:
+  s = _txt(v, "Material")
+  return s if s in TIPOS_INSUMO else "Material"
+
+
 # ---- Catálogo --------------------------------------------------------------
 @st.cache_data(ttl=300, show_spinner=False)
 def cargar_catalogo() -> pd.DataFrame:
   with get_conn() as conn:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
       cur.execute(
-          "SELECT id, concepto, unidad, costo_sin_iva::float AS costo_sin_iva,"
+          "SELECT id, concepto, tipo_insumo, unidad,"
+          " costo_sin_iva::float AS costo_sin_iva,"
           " cantidad_default::float AS cantidad_default, con_factura"
           " FROM catalogo_insumos WHERE activo = TRUE ORDER BY id"
       )
       rows = cur.fetchall()
   df = pd.DataFrame(rows, columns=COLS_CAT)
   df["id"] = df["id"].astype("Int64")
+  df["tipo_insumo"] = df["tipo_insumo"].apply(_tipo)
   df["costo_sin_iva"] = df["costo_sin_iva"].astype(float)
   df["cantidad_default"] = df["cantidad_default"].astype(float)
   df["con_factura"] = df["con_factura"].astype(bool)
@@ -320,6 +342,7 @@ def guardar_catalogo(df: pd.DataFrame) -> list[str]:
       continue
     if len(concepto) > 150:
       errores.append(f"Fila {n}: el concepto excede 150 caracteres.")
+    tipo = _tipo(row.get("tipo_insumo"))
     unidad = _txt(row.get("unidad"), "Pza") or "Pza"
     if len(unidad) > 20:
       errores.append(f"Fila {n}: la unidad excede 20 caracteres.")
@@ -335,6 +358,7 @@ def guardar_catalogo(df: pd.DataFrame) -> list[str]:
     filas.append((
         None if es_nueva else int(row["id"]),
         concepto,
+        tipo,
         unidad,
         round(costo, 2),
         round(cant, 2),
@@ -354,20 +378,20 @@ def guardar_catalogo(df: pd.DataFrame) -> list[str]:
             "UPDATE catalogo_insumos SET activo = FALSE WHERE id = ANY(%s)",
             (a_desactivar,),
         )
-      for id_, concepto, unidad, costo, cant, con_fac in filas:
+      for id_, concepto, tipo, unidad, costo, cant, con_fac in filas:
         if id_ is None:
           cur.execute(
               "INSERT INTO catalogo_insumos"
-              " (concepto, unidad, costo_sin_iva, cantidad_default, con_factura)"
-              " VALUES (%s, %s, %s, %s, %s)",
-              (concepto, unidad, costo, cant, con_fac),
+              " (concepto, tipo_insumo, unidad, costo_sin_iva, cantidad_default, con_factura)"
+              " VALUES (%s, %s, %s, %s, %s, %s)",
+              (concepto, tipo, unidad, costo, cant, con_fac),
           )
         else:
           cur.execute(
-              "UPDATE catalogo_insumos SET concepto=%s, unidad=%s,"
-              " costo_sin_iva=%s, cantidad_default=%s, con_factura=%s"
-              " WHERE id=%s",
-              (concepto, unidad, costo, cant, con_fac, id_),
+              "UPDATE catalogo_insumos SET concepto=%s, tipo_insumo=%s,"
+              " unidad=%s, costo_sin_iva=%s, cantidad_default=%s,"
+              " con_factura=%s WHERE id=%s",
+              (concepto, tipo, unidad, costo, cant, con_fac, id_),
           )
   cargar_catalogo.clear()
   return []
@@ -394,6 +418,7 @@ def guardar_cotizacion(
       (
           datos["folio"],
           str(it["Concepto"]),
+          _tipo(it.get("tipo_insumo")),
           _txt(it["unidad"], "Pza") or "Pza",
           round(float(it["Cantidad"]), 2),
           round(float(it["costo_sin_iva"]), 2),
@@ -425,7 +450,6 @@ def guardar_cotizacion(
             payload,
         )
       elif sobrescribir:
-        # Actualiza conservando fecha_creacion original
         cur.execute(
             """
                 UPDATE cotizaciones SET
@@ -449,7 +473,7 @@ def guardar_cotizacion(
             payload,
         )
         if cur.rowcount == 0:
-          raise errors.UndefinedTable  # forzar manejo limpio si no existía
+          raise errors.UndefinedTable
         cur.execute(
             "DELETE FROM cotizacion_insumos WHERE folio = %s",
             (payload["folio"],),
@@ -475,8 +499,8 @@ def guardar_cotizacion(
       if filas_insumos:
         cur.executemany(
             "INSERT INTO cotizacion_insumos"
-            " (folio, concepto, unidad, cantidad, costo_unitario_sin_iva, con_factura, importe)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            " (folio, concepto, tipo_insumo, unidad, cantidad, costo_unitario_sin_iva, con_factura, importe)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             filas_insumos,
         )
   cargar_historial.clear()
@@ -523,9 +547,10 @@ def obtener_cotizacion(folio: str):
       )
       cot = cur.fetchone()
       cur.execute(
-          "SELECT concepto, unidad, cantidad::float AS cantidad,"
-          " costo_unitario_sin_iva::float AS costo_sin_iva, con_factura"
-          " FROM cotizacion_insumos WHERE folio = %s ORDER BY id",
+          "SELECT concepto, tipo_insumo, unidad,"
+          " cantidad::float AS cantidad, costo_unitario_sin_iva::float AS"
+          " costo_sin_iva, con_factura FROM cotizacion_insumos WHERE folio ="
+          " %s ORDER BY id",
           (folio,),
       )
       insumos = cur.fetchall()
@@ -584,7 +609,7 @@ def generar_excel_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
   row_idx = 9
   if not df_usados.empty:
     ws.cell(
-        row=row_idx, column=1, value="Insumos y Refacciones Contempladas"
+        row=row_idx, column=1, value="Insumos y Equipos Contemplados"
     ).font = font_bold
     row_idx += 1
     headers = ["Concepto", "Unidad", "Cantidad", "P.U. Ref.", "Importe"]
@@ -695,7 +720,7 @@ def generar_pdf_cotizacion(datos: dict, df_usados: pd.DataFrame) -> bytes:
 
   if not df_usados.empty:
     pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(0, 7, "Refacciones e Insumos Considerados:", 0, 1)
+    pdf.cell(0, 7, "Refacciones, Insumos y Equipos Considerados:", 0, 1)
     pdf.set_fill_color(232, 238, 245)
     pdf.cell(110, 7, "Concepto", 1, 0, "C", True)
     pdf.cell(25, 7, "Unidad", 1, 0, "C", True)
@@ -807,6 +832,7 @@ def cb_cargar(folio: str):
   filas = [
       {
           "Concepto": i["concepto"],
+          "tipo_insumo": _tipo(i.get("tipo_insumo")),
           "unidad": i["unidad"],
           "costo_sin_iva": i["costo_sin_iva"],
           "con_factura": i["con_factura"],
@@ -819,6 +845,7 @@ def cb_cargar(folio: str):
     if r["concepto"] not in usados:
       filas.append({
           "Concepto": r["concepto"],
+          "tipo_insumo": _tipo(r.get("tipo_insumo")),
           "unidad": r["unidad"],
           "costo_sin_iva": r["costo_sin_iva"],
           "con_factura": r["con_factura"],
@@ -858,14 +885,17 @@ def calcular(
     pct_uti,
     regimen,
 ) -> dict:
-  costo_mat = df_sel["Importe"].sum()
+  es_mat = df_sel["tipo_insumo"] == "Material"
+  costo_mat = df_sel.loc[es_mat, "Importe"].sum()
+  costo_eq = df_sel.loc[~es_mat, "Importe"].sum()
+
   con_fac = df_sel.loc[df_sel["con_factura"], "Importe"].sum()
   sin_fac = df_sel.loc[~df_sel["con_factura"], "Importe"].sum()
   iva_acreditable = con_fac * IVA
 
   costo_mo = costo_mo_base * factor_urg
   herr = costo_mo * pct_herr
-  cd = costo_mat + costo_mo + herr
+  cd = costo_mat + costo_eq + costo_mo + herr
   ci = cd * pct_ind
   gar = (cd + ci) * pct_gar
   uti = (cd + ci + gar) * pct_uti
@@ -879,6 +909,7 @@ def calcular(
   ganancia = total - desembolso - iva_pagar - isr
   return {
       "costo_mat": costo_mat,
+      "costo_eq": costo_eq,
       "costo_mo": costo_mo,
       "herr": herr,
       "cd": cd,
@@ -917,6 +948,9 @@ with tab1:
       column_config={
           "id": st.column_config.NumberColumn("id", disabled=True),
           "concepto": st.column_config.TextColumn("Concepto", max_chars=150),
+          "tipo_insumo": st.column_config.SelectboxColumn(
+              "Tipo", options=TIPOS_INSUMO, default="Material"
+          ),
           "unidad": st.column_config.TextColumn(
               "Unidad", max_chars=20, default="Pza"
           ),
@@ -975,6 +1009,7 @@ with tab2:
         st.data_editor,
         base,
         column_config={
+            "tipo_insumo": st.column_config.TextColumn("Tipo"),
             "unidad": "Unidad",
             "costo_sin_iva": st.column_config.NumberColumn(
                 "Costo s/IVA", format="$%.2f"
@@ -984,10 +1019,17 @@ with tab2:
                 min_value=0.0, step=0.5, format="%.2f"
             ),
         },
-        disabled=["Concepto", "unidad", "costo_sin_iva", "con_factura"],
+        disabled=[
+            "Concepto",
+            "tipo_insumo",
+            "unidad",
+            "costo_sin_iva",
+            "con_factura",
+        ],
         key=f"sel_{ss['ver']}",
     ).copy()
     seleccion["Cantidad"] = seleccion["Cantidad"].fillna(0.0).astype(float)
+    seleccion["tipo_insumo"] = seleccion["tipo_insumo"].apply(_tipo)
     seleccion["costo_sin_iva"] = seleccion["costo_sin_iva"].astype(float)
     seleccion["con_factura"] = seleccion["con_factura"].fillna(True).astype(bool)
     seleccion["Importe"] = seleccion["costo_sin_iva"] * seleccion["Cantidad"]
@@ -1139,8 +1181,10 @@ with tab2:
     m3.metric("Total c/IVA", f"${r['total']:,.2f}")
     m4.metric("Ganancia libre (incluye tu MO)", f"${r['ganancia']:,.2f}")
     st.caption(
-        f"Si pagas la mano de obra (${r['costo_mo']:,.2f}) como sueldo, lo que"
-        f" queda libre es **${r['ganancia_sin_mo']:,.2f}**."
+        f"Materiales: **${r['costo_mat']:,.2f}** · Equipo / Herramienta:"
+        f" **${r['costo_eq']:,.2f}** · Mano de obra:"
+        f" **${r['costo_mo']:,.2f}** · Si pagas la MO como sueldo, queda"
+        f" libre **${r['ganancia_sin_mo']:,.2f}**."
     )
 
     if r["ganancia"] < 0:
