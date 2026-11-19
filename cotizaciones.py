@@ -21,9 +21,13 @@ def init_db():
                     concepto VARCHAR(150) NOT NULL,
                     unidad VARCHAR(20) NOT NULL DEFAULT 'Pza',
                     costo_sin_iva NUMERIC(12, 2) NOT NULL DEFAULT 0,
+                    cantidad_default NUMERIC(10, 2) NOT NULL DEFAULT 1.00,
                     con_factura BOOLEAN NOT NULL DEFAULT TRUE,
                     activo BOOLEAN NOT NULL DEFAULT TRUE
                 );
+                ALTER TABLE catalogo_insumos
+                ADD COLUMN IF NOT EXISTS cantidad_default NUMERIC(10, 2) NOT NULL DEFAULT 1.00;
+
                 CREATE TABLE IF NOT EXISTS cotizaciones (
                     folio VARCHAR(30) PRIMARY KEY,
                     cliente VARCHAR(150) NOT NULL,
@@ -58,8 +62,9 @@ def cargar_catalogo() -> pd.DataFrame:
   with get_conn() as conn:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
       cur.execute(
-          "SELECT id, concepto, unidad, costo_sin_iva::float, con_factura"
-          " FROM catalogo_insumos WHERE activo = TRUE ORDER BY id"
+          "SELECT id, concepto, unidad, costo_sin_iva::float,"
+          " cantidad_default::float, con_factura FROM catalogo_insumos WHERE"
+          " activo = TRUE ORDER BY id"
       )
       rows = cur.fetchall()
   return pd.DataFrame(rows)
@@ -69,17 +74,22 @@ def guardar_catalogo(df: pd.DataFrame):
   with get_conn() as conn:
     with conn.cursor() as cur:
       for _, row in df.iterrows():
+        cant_def = float(row.get("cantidad_default", 1.0))
+        if pd.isna(cant_def):
+          cant_def = 1.0
         if pd.notna(row.get("id")) and row["id"] != "":
           cur.execute(
               """
                         UPDATE catalogo_insumos
-                        SET concepto = %s, unidad = %s, costo_sin_iva = %s, con_factura = %s
+                        SET concepto = %s, unidad = %s, costo_sin_iva = %s,
+                            cantidad_default = %s, con_factura = %s
                         WHERE id = %s
                         """,
               (
                   row["concepto"],
                   row["unidad"],
                   float(row["costo_sin_iva"]),
+                  cant_def,
                   bool(row["con_factura"]),
                   int(row["id"]),
               ),
@@ -88,13 +98,14 @@ def guardar_catalogo(df: pd.DataFrame):
           if row.get("concepto"):
             cur.execute(
                 """
-                            INSERT INTO catalogo_insumos (concepto, unidad, costo_sin_iva, con_factura)
-                            VALUES (%s, %s, %s, %s)
+                            INSERT INTO catalogo_insumos (concepto, unidad, costo_sin_iva, cantidad_default, con_factura)
+                            VALUES (%s, %s, %s, %s, %s)
                             """,
                 (
                     row["concepto"],
                     row.get("unidad", "Pza"),
                     float(row.get("costo_sin_iva", 0.0)),
+                    cant_def,
                     bool(row.get("con_factura", True)),
                 ),
             )
@@ -163,7 +174,12 @@ with tab1:
   df_editado = st.data_editor(
       df_cat,
       num_rows="dynamic",
-      column_config={"id": st.column_config.NumberColumn(disabled=True)},
+      column_config={
+          "id": st.column_config.NumberColumn(disabled=True),
+          "cantidad_default": st.column_config.NumberColumn(
+              "Cantidad", min_value=0.0, step=0.5, format="%.2f"
+          ),
+      },
       use_container_width=True,
   )
   if st.button("💾 Guardar cambios"):
@@ -185,11 +201,12 @@ with tab2:
     ubicacion = c_info3.text_input("Ubicación", value="Colima")
 
     df_sel = df_base.copy()
-    df_sel["Cantidad"] = 0.0
+    df_sel["Cantidad"] = df_sel["cantidad_default"].fillna(0.0)
     seleccion = st.data_editor(
         df_sel,
         column_config={
             "id": None,
+            "cantidad_default": None,
             "Cantidad": st.column_config.NumberColumn(
                 min_value=0.0, step=0.5, format="%.2f"
             ),
