@@ -7,6 +7,7 @@ import streamlit as st
 st.set_page_config(page_title="Cotizador PU ", layout="wide")
 st.title("⚡ Cotizador PU Técnico con Neon")
 
+
 def get_conn():
   return psycopg2.connect(st.secrets["DB"])
 
@@ -212,6 +213,17 @@ with tab2:
           "Factor urgencia / fin de semana", [1.0, 1.25, 1.5, 2.0], index=2
       )
 
+      ambos_ingenieros = st.checkbox(
+          "Ambos somos ingenieros (dividir ganancia neta entre los 2)",
+          value=True,
+      )
+      pct_ing_1 = 50
+      if ambos_ingenieros:
+        pct_ing_1 = st.slider(
+            "Porcentaje de ganancia para Ing. 1 (%)", 0, 100, 50
+        )
+      pct_ing_2 = 100 - pct_ing_1
+
     with col_calc:
       st.markdown("**Indirectos, margen y SAT**")
       pct_ind = st.slider("Indirectos (%)", 0, 30, 12) / 100
@@ -231,9 +243,9 @@ with tab2:
     )
 
     costo_mat = seleccion["Importe"].sum()
-    iva_acreditable = (
-        seleccion[seleccion["con_factura"]]["Importe"].sum() * 0.16
-    )
+    con_fac_importe = seleccion[seleccion["con_factura"]]["Importe"].sum()
+    sin_fac_importe = seleccion[~seleccion["con_factura"]]["Importe"].sum()
+    iva_acreditable = con_fac_importe * 0.16
     costo_mo = ((t_esp * h_esp) + (t_ayu * h_ayu)) * factor_urg
     herr_menor = costo_mo * 0.03
 
@@ -249,7 +261,7 @@ with tab2:
     isr_est = (
         subtotal * 0.01 if "RESICO" in regimen else max(0.0, uti * 0.20)
     )
-    desembolso_mat = seleccion["Importe"].sum() * 1.16
+    desembolso_mat = (con_fac_importe * 1.16) + sin_fac_importe
     ganancia_libre = total_fac - desembolso_mat - iva_pagar - isr_est
 
     m1, m2, m3, m4 = st.columns(4)
@@ -257,6 +269,13 @@ with tab2:
     m2.metric("Subtotal s/IVA", f"${subtotal:,.2f}")
     m3.metric("Total c/IVA", f"${total_fac:,.2f}")
     m4.metric("Ganancia Libre Real", f"${ganancia_libre:,.2f}")
+
+    if ambos_ingenieros:
+      pago_1 = max(0.0, ganancia_libre * (pct_ing_1 / 100))
+      pago_2 = max(0.0, ganancia_libre * (pct_ing_2 / 100))
+      r1, r2 = st.columns(2)
+      r1.info(f"Ingeniero 1 ({pct_ing_1}%): **${pago_1:,.2f} MXN**")
+      r2.info(f"Ingeniero 2 ({pct_ing_2}%): **${pago_2:,.2f} MXN**")
 
     if st.button("📌 Guardar Cotización en Neon"):
       guardar_cotizacion(
@@ -284,4 +303,7 @@ with tab2:
 with tab3:
   st.subheader("Cotizaciones Guardadas")
   df_hist = cargar_historial()
-  st.dataframe(df_hist, use_container_width=True)
+  if df_hist.empty:
+    st.info("Aún no hay cotizaciones guardadas.")
+  else:
+    st.dataframe(df_hist, use_container_width=True)
