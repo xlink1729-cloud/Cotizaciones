@@ -2,6 +2,7 @@ from contextlib import contextmanager
 from datetime import datetime
 import hmac
 import io
+import textwrap
 import time
 from zoneinfo import ZoneInfo
 
@@ -637,6 +638,10 @@ def siguiente_folio(cur) -> str:
   return f"COT-{anio}-{cur.fetchone()[0]:04d}"
 
 
+class FolioNoExiste(Exception):
+  pass
+
+
 def guardar_cotizacion_multipartida(
     datos: dict,
     partidas_resumen: list[dict],
@@ -688,7 +693,7 @@ def guardar_cotizacion_multipartida(
             payload,
         )
         if cur.rowcount == 0:
-          raise errors.UndefinedTable
+          raise FolioNoExiste
         cur.execute(
             "DELETE FROM cotizacion_insumos WHERE folio = %s",
             (payload["folio"],),
@@ -831,7 +836,10 @@ def obtener_cotizacion_completa(folio: str):
 # Exportación Excel y PDF
 # ----------------------------------------------------------------------------
 def generar_excel_cotizacion(
-    datos: dict, partidas_resumen: list[dict], df_explosion: pd.DataFrame
+    datos: dict,
+    partidas_resumen: list[dict],
+    df_explosion: pd.DataFrame,
+    incluir_costos: bool = False,
 ) -> bytes:
   wb = openpyxl.Workbook()
   ws = wb.active
@@ -921,7 +929,9 @@ def generar_excel_cotizacion(
     ws_exp = wb.create_sheet(title="Explosion_Insumos")
     ws_exp["A1"] = "EXPLOSIÓN DE INSUMOS Y EQUIPOS"
     ws_exp["A1"].font = font_title
-    exp_cols = ["Concepto", "Tipo", "Unidad", "Cantidad Total", "Importe Total"]
+    exp_cols = ["Concepto", "Tipo", "Unidad", "Cantidad Total"]
+    if incluir_costos:
+      exp_cols.append("Importe Total")
     for col_i, h in enumerate(exp_cols, start=1):
       cell = ws_exp.cell(row=3, column=col_i, value=h)
       cell.fill = header_fill
@@ -935,9 +945,10 @@ def generar_excel_cotizacion(
       c1 = ws_exp.cell(row=r_i, column=4, value=float(er["Cantidad Total"]))
       c1.number_format = "#,##0.00"
       c1.border = thin_border
-      c2 = ws_exp.cell(row=r_i, column=5, value=float(er["Importe Total"]))
-      c2.number_format = "$#,##0.00"
-      c2.border = thin_border
+      if incluir_costos:
+        c2 = ws_exp.cell(row=r_i, column=5, value=float(er["Importe Total"]))
+        c2.number_format = "$#,##0.00"
+        c2.border = thin_border
       r_i += 1
     ws_exp.column_dimensions["A"].width = 40
     ws_exp.column_dimensions["B"].width = 22
@@ -1016,11 +1027,20 @@ def generar_pdf_cotizacion(
   pdf.set_font("Helvetica", "", 9)
   for p in partidas_resumen:
     res = p["res"]
-    pdf.cell(95, 7, limpio(p["nombre"])[:48], 1, 0)
-    pdf.cell(18, 7, limpio(p["unidad"]), 1, 0, "C")
-    pdf.cell(20, 7, f"{float(p['cantidad']):,.2f}", 1, 0, "R")
-    pdf.cell(28, 7, f"${float(res['pu_sin_iva']):,.2f}", 1, 0, "R")
-    pdf.cell(29, 7, f"${float(res['subtotal']):,.2f}", 1, 1, "R")
+    lineas = textwrap.wrap(limpio(p["nombre"]), 52) or [""]
+    alto = 6 * len(lineas)
+    if pdf.get_y() + alto > 270:
+      pdf.add_page()
+    x0, y0 = pdf.get_x(), pdf.get_y()
+    pdf.rect(x0, y0, 95, alto)
+    for i_l, linea in enumerate(lineas):
+      pdf.set_xy(x0 + 1, y0 + 6 * i_l)
+      pdf.cell(93, 6, linea, 0, 0)
+    pdf.set_xy(x0 + 95, y0)
+    pdf.cell(18, alto, limpio(p["unidad"]), 1, 0, "C")
+    pdf.cell(20, alto, f"{float(p['cantidad']):,.2f}", 1, 0, "R")
+    pdf.cell(28, alto, f"${float(res['pu_sin_iva']):,.2f}", 1, 0, "R")
+    pdf.cell(29, alto, f"${float(res['subtotal']):,.2f}", 1, 1, "R")
   pdf.ln(5)
 
   pdf.set_x(105)
@@ -1378,6 +1398,13 @@ with tab2:
       help="Limpia todo el formulario y empieza una cotización en blanco.",
   )
 
+  # El folio asignado al guardar se aplica AQUÍ, antes de crear el widget
+  # (Streamlit no permite modificar su valor después de instanciarlo).
+  if ss.get("folio_pendiente") is not None:
+    ss["folio"] = ss.pop("folio_pendiente")
+  if ss.get("msg_guardado"):
+    st.success(ss.pop("msg_guardado"))
+
   c1, c2, c3 = st.columns(3)
   c1.text_input(
       "Folio",
@@ -1390,7 +1417,8 @@ with tab2:
   c3.text_input("Ubicación", key="ubicacion", max_chars=120)
 
   st.markdown("### Partidas del presupuesto")
-  df_partidas_tabla = pd.DataFrame([
+  tabla_partidas_ph = st.container()  # se llena al final, con la partida activa ya recalculada
+  _df_partidas_tabla_pendiente = lambda: pd.DataFrame([
       {
           "#": x["idx"] + 1,
           "Partida / Concepto": x["nombre"],
@@ -1402,16 +1430,6 @@ with tab2:
       }
       for x in partidas_resumen
   ])
-  tabla(
-      st.dataframe,
-      df_partidas_tabla,
-      column_config={
-          "Cantidad": st.column_config.NumberColumn(format="%.2f"),
-          "P.U. s/IVA": st.column_config.NumberColumn(format="$%.2f"),
-          "Importe s/IVA": st.column_config.NumberColumn(format="$%.2f"),
-          "Ganancia Libre": st.column_config.NumberColumn(format="$%.2f"),
-      },
-  )
 
   pa1, pa2, pa3 = st.columns([3, 1, 1])
   opciones_p = [
@@ -1562,7 +1580,10 @@ with tab2:
           min_value=0.0,
           step=0.5,
           value=float(p_cur.get(h_key, 4.0)),
-          help=f"Horas estimadas de {nombre_per} para esta partida.",
+          help=(
+              f"Horas de {nombre_per} POR UNIDAD de la partida; se multiplican"
+              " por la cantidad."
+          ),
           key=f"ui_{h_key}_{uid}_{ss['ver']}",
       )
       p_cur[t_key] = float(t_val)
@@ -1679,6 +1700,17 @@ with tab2:
   }
 
   df_explosion = construir_explosion(partidas_resumen)
+  with tabla_partidas_ph:
+    tabla(
+        st.dataframe,
+        _df_partidas_tabla_pendiente(),
+        column_config={
+            "Cantidad": st.column_config.NumberColumn(format="%.2f"),
+            "P.U. s/IVA": st.column_config.NumberColumn(format="$%.2f"),
+            "Importe s/IVA": st.column_config.NumberColumn(format="$%.2f"),
+            "Ganancia Libre": st.column_config.NumberColumn(format="$%.2f"),
+        },
+    )
   tot_cd = sum(x["res"]["cd"] for x in partidas_resumen)
   tot_ci = sum(x["res"]["ci"] for x in partidas_resumen)
   tot_gar = sum(x["res"]["gar"] for x in partidas_resumen)
@@ -1762,7 +1794,7 @@ with tab2:
       "cliente": ss["cliente"].strip() or "Cliente Residencial",
       "ubicacion": ss["ubicacion"].strip() or "Colima",
       "descripcion_servicio": resumen_text,
-      "factor_urgencia": r2f(p_cur["factor_urg"]),
+      "factor_urgencia": r2f(ss["partidas"][0]["factor_urg"]),
       "costo_directo": r2f(tot_cd),
       "indirectos_monto": r2f(tot_ci),
       "garantia_monto": r2f(tot_gar),
@@ -1776,6 +1808,11 @@ with tab2:
   }
   nombre_archivo = datos_totales["folio"] or "cotizacion_multipartida"
 
+  incluir_costos_xlsx = st.checkbox(
+      "Incluir costo de insumos en el Excel (uso interno; NO enviar al cliente)",
+      value=False,
+      key="excel_con_costos",
+  )
   b1, b2, b3 = st.columns(3)
   with b1:
     if st.button("📌 Guardar Cotización", use_container_width=True):
@@ -1796,14 +1833,15 @@ with tab2:
               },
               ss["sobrescribir"],
           )
-          ss["folio"] = folio_final
-          st.success(f"Cotización {folio_final} guardada con partidas.")
+          ss["folio_pendiente"] = folio_final
+          ss["msg_guardado"] = f"Cotización {folio_final} guardada con partidas."
+          st.rerun()
         except errors.UniqueViolation:
           st.error(
               f"Ya existe el folio {datos_totales['folio']}. Borra el folio"
               " para uno nuevo o marca «Actualizar si el folio ya existe»."
           )
-        except errors.UndefinedTable:
+        except FolioNoExiste:
           st.error(
               f"No existe el folio {datos_totales['folio']} para actualizar."
           )
@@ -1814,7 +1852,7 @@ with tab2:
     st.download_button(
         label="📊 Descargar Excel (.xlsx)",
         data=generar_excel_cotizacion(
-            datos_totales, partidas_resumen, df_explosion
+            datos_totales, partidas_resumen, df_explosion, incluir_costos_xlsx
         ),
         file_name=f"{nombre_archivo}.xlsx",
         mime=(
