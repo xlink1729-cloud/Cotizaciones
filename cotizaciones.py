@@ -550,8 +550,6 @@ def calcular_partida(
       else max(0.0, uti * ISR_ACT_EMP)
   )
   desembolso = con_fac_tot * (1 + IVA) + sin_fac_tot
-  # Efectivo disponible antes de remunerar internamente la mano de obra.
-  # En el esquema mixto, el reparto se calcula sobre ganancia_sin_mo.
   ganancia = total - desembolso - iva_pagar - isr
 
   return {
@@ -1262,10 +1260,9 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
   st.subheader("Catálogo de Insumos y Equipos")
   st.caption(
-      "Guarda refacciones, consumibles y gastos de vehículo. Para traslados, "
-      "registra combustible (litros), kilometraje o desgaste/mantenimiento como "
-      "conceptos separados; captura sus cantidades y costos en cada partida. "
-      "La mano de obra se captura directamente en el APU."
+      "Guarda aquí tus refacciones, consumibles, traslados o equipos de uso"
+      " frecuente para poder jalarlos rápido desde cualquier partida (la mano de"
+      " obra se captura directo en cada partida)."
   )
   df_cat = cargar_catalogo()
   df_editado = tabla(
@@ -1345,8 +1342,7 @@ for idx_p, p_state in enumerate(ss["partidas"]):
       "df_sel": base_p,
       "res": res_p,
       "parametros_partida": {
-          "version": 6,
-          "modelo_remuneracion": "mixto",
+          "version": 5,
           "esquema": esq_p,
           "tarifas": tarifas_p,
           "horas": horas_p,
@@ -1402,7 +1398,7 @@ with tab2:
           "Cantidad": x["cantidad"],
           "P.U. s/IVA": x["res"]["pu_sin_iva"],
           "Importe s/IVA": x["res"]["subtotal"],
-          "Disponible tras MO": x["res"]["ganancia_sin_mo"],
+          "Ganancia Libre": x["res"]["ganancia"],
       }
       for x in partidas_resumen
   ])
@@ -1413,7 +1409,7 @@ with tab2:
           "Cantidad": st.column_config.NumberColumn(format="%.2f"),
           "P.U. s/IVA": st.column_config.NumberColumn(format="$%.2f"),
           "Importe s/IVA": st.column_config.NumberColumn(format="$%.2f"),
-          "Disponible tras MO": st.column_config.NumberColumn(format="$%.2f"),
+          "Ganancia Libre": st.column_config.NumberColumn(format="$%.2f"),
       },
   )
 
@@ -1588,9 +1584,9 @@ with tab2:
     if len(personas_p) == 2:
       n1, n2 = personas_p[0][0], personas_p[1][0]
       div_p = st.checkbox(
-          f"Repartir utilidad después de pagar horas entre {n1} y {n2}",
+          f"Dividir ganancia libre de la partida entre {n1} y {n2}",
           value=bool(p_cur["dividir"]),
-          help="Primero se considera el pago por hora de cada participante; después se reparte el remanente disponible, sin volver a incluir la mano de obra.",
+          help="Reparte la ganancia libre real de esta partida entre los dos participantes.",
           key=f"p_div_{uid}_{ss['ver']}",
       )
       p_cur["dividir"] = div_p
@@ -1668,8 +1664,7 @@ with tab2:
   partidas_resumen[ss["partida_activa"]]["df_sel"] = df_edit_p
   partidas_resumen[ss["partida_activa"]]["res"] = res_act
   partidas_resumen[ss["partida_activa"]]["parametros_partida"] = {
-      "version": 6,
-      "modelo_remuneracion": "mixto",
+      "version": 5,
       "esquema": esq_sel,
       "tarifas": tarifas_in,
       "horas": horas_in,
@@ -1700,8 +1695,8 @@ with tab2:
   st.caption(
       f"**APU Partida {ss['partida_activa'] + 1}:** P.U. s/IVA ="
       f" **${res_act['pu_sin_iva']:,.2f}** · Importe partida ="
-      f" **${res_act['subtotal']:,.2f}** · Disponible después de MO ="
-      f" **${res_act['ganancia_sin_mo']:,.2f}**"
+      f" **${res_act['subtotal']:,.2f}** · Ganancia partida ="
+      f" **${res_act['ganancia']:,.2f}**"
   )
 
   st.divider()
@@ -1710,11 +1705,10 @@ with tab2:
   m1.metric("Costo Directo Total", f"${tot_cd:,.2f}")
   m2.metric("Subtotal s/IVA", f"${tot_sub:,.2f}")
   m3.metric("Total c/IVA", f"${tot_fac:,.2f}")
-  m4.metric("Utilidad disponible tras MO", f"${tot_gan_sin_mo:,.2f}")
+  m4.metric("Ganancia Libre Total", f"${tot_gan:,.2f}")
   st.caption(
-      f"Mano de obra considerada como pago por hora: **${tot_mo:,.2f}** · "
-      f"remanente para utilidad/reparto: **${tot_gan_sin_mo:,.2f}**. "
-      "El reparto no vuelve a incluir el pago por hora."
+      f"Mano de obra acumulada: **${tot_mo:,.2f}** · Ganancia libre sin contar"
+      f" tu MO como sueldo: **${tot_gan_sin_mo:,.2f}**."
   )
 
   # Reparto de ganancia libre por partida activa y acumulado total
@@ -1728,22 +1722,22 @@ with tab2:
     if pp_x.get("dividir") and len(pers_x) == 2:
       tiene_reparto_global = True
       pct1_x = int(pp_x.get("pct_ing_1", 50))
-      gan_x = float(x["res"]["ganancia_sin_mo"])
+      gan_x = float(x["res"]["ganancia"])
       tot_p1_acum += max(0.0, gan_x * pct1_x / 100.0)
       tot_p2_acum += max(0.0, gan_x * (100 - pct1_x) / 100.0)
 
   if p_cur["dividir"] and len(personas_p) == 2:
-    p1_val = max(0.0, res_act["ganancia_sin_mo"] * int(p_cur["pct_ing_1"]) / 100.0)
+    p1_val = max(0.0, res_act["ganancia"] * int(p_cur["pct_ing_1"]) / 100.0)
     p2_val = max(
-        0.0, res_act["ganancia_sin_mo"] * (100 - int(p_cur["pct_ing_1"])) / 100.0
+        0.0, res_act["ganancia"] * (100 - int(p_cur["pct_ing_1"])) / 100.0
     )
     r1, r2 = st.columns(2)
     r1.info(
-        f"{personas_p[0][0]} ({p_cur['pct_ing_1']}%) de utilidad remanente en Partida"
+        f"{personas_p[0][0]} ({p_cur['pct_ing_1']}%) en Partida"
         f" {ss['partida_activa'] + 1}: **${p1_val:,.2f} MXN**"
     )
     r2.info(
-        f"{personas_p[1][0]} ({100 - int(p_cur['pct_ing_1'])}%) de utilidad remanente en Partida"
+        f"{personas_p[1][0]} ({100 - int(p_cur['pct_ing_1'])}%) en Partida"
         f" {ss['partida_activa'] + 1}: **${p2_val:,.2f} MXN**"
     )
 
@@ -1796,8 +1790,7 @@ with tab2:
               {**datos_totales, "cliente": cliente_val},
               partidas_resumen,
               {
-                  "version": 6,
-                  "modelo_remuneracion": "mixto",
+                  "version": 5,
                   "num_partidas": len(partidas_resumen),
                   "ganancia_sin_mo": r2f(tot_gan_sin_mo),
               },
